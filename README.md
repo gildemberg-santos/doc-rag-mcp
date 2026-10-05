@@ -139,6 +139,33 @@ docker compose run --rm indexer --all --no-clean
 > ID/hash) — isso também limpa qualquer duplicação deixada por versões
 > anteriores do modo incremental.
 
+Além do hash de conteúdo, o indexer evita até **ler** um arquivo quando
+mtime + tamanho + nº de chunks batem exatamente com o que já está indexado
+— só nesse caso ele é pulado sem reabrir/rehashear; qualquer edição real
+(ou uma reindexação anterior interrompida no meio) cai de volta no caminho
+normal de releitura. Dentro de um mesmo scan, arquivos modificados mais
+recentemente são processados primeiro.
+
+### Modo contínuo (`--watch`)
+
+```bash
+# local:
+go run ./cmd/indexer --all --watch --interval 10m
+# docker (serviço dedicado, opt-in):
+make docker-watch
+# ou direto: docker compose --profile watch up -d indexer-watch
+```
+
+Repete a indexação incremental a cada `--interval` (default 10m; também
+configurável no Docker via `REINDEX_INTERVAL`), até receber Ctrl-C/SIGTERM
+— o progresso já persistido fica salvo, e a interrupção é reportada como
+parada limpa, não como falha. `--watch` sempre roda em modo incremental
+(ignora `--no-clean=false`): repetir um reindex completo a cada ciclo não
+faria sentido. É esse ciclo periódico que também funciona como
+"monitoramento" de exclusões: um arquivo apagado do disco tem seus pontos
+removidos do Qdrant no ciclo seguinte, com defasagem máxima igual ao
+intervalo configurado — não há verificação em tempo real (fsnotify).
+
 ## Modo híbrido: Ollama local (grátis, offline)
 
 O server e o indexer aceitam `--provider ollama` (ou `EMBED_PROVIDER=ollama`).

@@ -1,4 +1,4 @@
-.PHONY: tidy build run-http run-stdio index index-all docker-up docker-index docker-logs qdrant-ui ollama-pull docker-index-ollama
+.PHONY: tidy build run-http run-stdio index index-all docker-up docker-index docker-logs qdrant-ui ollama-pull docker-index-ollama docker-watch
 
 tidy:
 	go mod tidy
@@ -39,6 +39,11 @@ docker-index:
 
 docker-index-ollama:
 	docker compose run --rm -e EMBED_PROVIDER=ollama indexer --all --provider ollama
+
+# Indexador contínuo (incremental a cada REINDEX_INTERVAL, default 10m),
+# com limpeza automática de pontos de arquivos excluídos no mesmo ciclo.
+docker-watch:
+	docker compose --profile watch up -d --build indexer-watch
 
 docker-logs:
 	docker compose logs -f mcp-server

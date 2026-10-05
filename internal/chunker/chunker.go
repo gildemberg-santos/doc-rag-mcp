@@ -6,7 +6,9 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"time"
 )
 
 // Chunk é um pedaço de arquivo pronto para embedding.
@@ -19,6 +21,14 @@ type Chunk struct {
 	// Hash é o fingerprint do conteúdo (sha256 de Content), usado para
 	// detectar chunks inalterados entre reindexações incrementais.
 	Hash string
+	// ModTime é o mtime do arquivo de origem no momento do scan.
+	ModTime time.Time
+	// Size é o tamanho em bytes do arquivo de origem.
+	Size int64
+	// ChunkCount é o nº total de chunks que o arquivo gerou — usado para
+	// detectar reindexações parciais (ex.: interrompidas no meio) antes de
+	// confiar num skip por mtime na próxima execução.
+	ChunkCount int
 }
 
 // Options controla o scan.
@@ -104,8 +114,70 @@ func shouldIndex(rel string, info fs.FileInfo) bool {
 	return false
 }
 
-// ScanProject percorre um projeto e retorna chunks.
-func ScanProject(projectName, projectDir string, opt *Options) ([]Chunk, error) {
+// fileEntry é o resultado leve (sem conteúdo) da passada de coleta.
+type fileEntry struct {
+	rel     string
+	abs     string
+	modTime time.Time
+	size    int64
+}
+
+// collectFiles varre o projeto e coleta metadados (sem ler conteúdo) de
+// todo arquivo indexável, ordenados por mtime decrescente (mais recentes
+// primeiro). Usa os.Stat (segue symlink) em vez de d.Info() (lstat) —
+// senão o mtime do link nunca mudaria quando o conteúdo do alvo muda.
+func collectFiles(projectDir string, maxFileBytes int) ([]fileEntry, error) {
+	var files []fileEntry
+	err := filepath.WalkDir(projectDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil // ignora erros de permissão
+		}
+		if d.IsDir() {
+			if skipDirs[d.Name()] {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		lstatInfo, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		rel, _ := filepath.Rel(projectDir, path)
+		if !shouldIndex(rel, lstatInfo) {
+			return nil
+		}
+		info, err := os.Stat(path) // segue symlink; erro = link quebrado
+		if err != nil {
+			return nil
+		}
+		if info.Size() > int64(maxFileBytes) {
+			return nil
+		}
+		files = append(files, fileEntry{
+			rel:     filepath.ToSlash(rel),
+			abs:     path,
+			modTime: info.ModTime(),
+			size:    info.Size(),
+		})
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.SliceStable(files, func(i, j int) bool {
+		return files[i].modTime.After(files[j].modTime)
+	})
+	return files, nil
+}
+
+// ScanProject percorre um projeto (arquivos modificados mais recentemente
+// primeiro) e chama onChunk para cada chunk — sem materializar a árvore
+// inteira em memória. Se shouldSkip(rel, modTime, size) retornar true para
+// um arquivo, ele não é lido (nem hasheado) — útil para pular arquivos
+// comprovadamente inalterados numa reindexação incremental. shouldSkip
+// pode ser nil (nunca pula). Se onChunk retornar erro, o scan é abortado e
+// o erro sobe para o chamador.
+func ScanProject(projectName, projectDir string, opt *Options, shouldSkip func(rel string, modTime time.Time, size int64) bool, onChunk func(Chunk) error) error {
 	o := defaultOptions()
 	if opt != nil {
 		if opt.MaxFileBytes > 0 {
@@ -118,41 +190,27 @@ func ScanProject(projectName, projectDir string, opt *Options) ([]Chunk, error) 
 			o.Overlap = opt.Overlap
 		}
 	}
-	var chunks []Chunk
-	err := filepath.WalkDir(projectDir, func(path string, d fs.DirEntry, err error) error {
+	files, err := collectFiles(projectDir, o.MaxFileBytes)
+	if err != nil {
+		return err
+	}
+	for _, f := range files {
+		if shouldSkip != nil && shouldSkip(f.rel, f.modTime, f.size) {
+			continue
+		}
+		data, err := os.ReadFile(f.abs)
 		if err != nil {
-			return nil // ignora erros de permissão
-		}
-		if d.IsDir() {
-			if skipDirs[d.Name()] {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		info, err := d.Info()
-		if err != nil {
-			return nil
-		}
-		rel, _ := filepath.Rel(projectDir, path)
-		if !shouldIndex(rel, info) {
-			return nil
-		}
-		if info.Size() > int64(o.MaxFileBytes) {
-			return nil
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return nil
+			continue
 		}
 		text := string(data)
 		if !isMostlyText(text) {
-			return nil
+			continue
 		}
 		// header com contexto do arquivo ajuda o retrieval.
 		// Arquivos com regra estrutural (rb/js/ts/md) saem em blocos por
 		// método/classe/heading com escopo; demais usam janela com overlap.
-		lang := languageFor(rel)
-		header := fmt.Sprintf("Projeto: %s | Arquivo: %s | Linguagem: %s\n---\n", projectName, filepath.ToSlash(rel), lang)
+		lang := languageFor(f.rel)
+		header := fmt.Sprintf("Projeto: %s | Arquivo: %s | Linguagem: %s\n---\n", projectName, f.rel, lang)
 		type piece struct {
 			scope string
 			body  string
@@ -174,18 +232,23 @@ func ScanProject(projectName, projectDir string, opt *Options) ([]Chunk, error) 
 			}
 			full += pc.body
 			h := sha256.Sum256([]byte(full))
-			chunks = append(chunks, Chunk{
+			c := Chunk{
 				Project:    projectName,
-				Path:       filepath.ToSlash(rel),
+				Path:       f.rel,
 				Language:   lang,
 				ChunkIndex: i,
 				Content:    full,
 				Hash:       fmt.Sprintf("%x", h[:]),
-			})
+				ModTime:    f.modTime,
+				Size:       f.size,
+				ChunkCount: len(pieces),
+			}
+			if err := onChunk(c); err != nil {
+				return err
+			}
 		}
-		return nil
-	})
-	return chunks, err
+	}
+	return nil
 }
 
 func splitIntoChunks(text string, size, overlap int) []string {
