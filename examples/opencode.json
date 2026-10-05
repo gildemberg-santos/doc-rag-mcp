@@ -1,0 +1,9 @@
+{
+  "mcp": {
+    "doc-rag": {
+      "type": "remote",
+      "url": "http://localhost:8080/mcp",
+      "enabled": true
+    }
+  }
+}
