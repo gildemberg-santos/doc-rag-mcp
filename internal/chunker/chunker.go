@@ -332,7 +332,9 @@ func splitIntoChunks(text string, size, overlap int) []string {
 	var cur strings.Builder
 	for _, ln := range lines {
 		if cur.Len()+len(ln)+1 > size {
-			out = append(out, cur.String())
+			if cur.Len() > 0 {
+				out = append(out, cur.String())
+			}
 			// overlap: mantém o sufixo
 			prev := cur.String()
 			cur.Reset()

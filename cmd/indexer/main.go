@@ -20,15 +20,16 @@ import (
 )
 
 // Uso:
-//   go run ./cmd/indexer --project neurolead --path /projects/neurolead
-//   go run ./cmd/indexer --all  (indexa todas as subpastas de PROJECTS_ROOT)
-//   go run ./cmd/indexer --all --provider ollama  (índice local, coleção docs-ollama)
-//   go run ./cmd/indexer --all --no-clean  (incremental: reembeda só chunks novos/
-//     alterados por hash de conteúdo, remove órfãos — não apaga tudo antes)
-//   go run ./cmd/indexer --all --batch-size 16  (lotes menores de embed+upsert:
-//     menos memória/menos trabalho perdido se falhar no meio; default 64)
-//   go run ./cmd/indexer --all --watch --interval 10m  (repete a indexação
-//     incremental a cada intervalo; Ctrl-C/SIGTERM encerra de forma limpa)
+//
+//	go run ./cmd/indexer --project neurolead --path /projects/neurolead
+//	go run ./cmd/indexer --all  (indexa todas as subpastas de PROJECTS_ROOT)
+//	go run ./cmd/indexer --all --provider ollama  (índice local, coleção docs-ollama)
+//	go run ./cmd/indexer --all --no-clean  (incremental: reembeda só chunks novos/
+//	  alterados por hash de conteúdo, remove órfãos — não apaga tudo antes)
+//	go run ./cmd/indexer --all --batch-size 16  (lotes menores de embed+upsert:
+//	  menos memória/menos trabalho perdido se falhar no meio; default 64)
+//	go run ./cmd/indexer --all --watch --interval 10m  (repete a indexação
+//	  incremental a cada intervalo; Ctrl-C/SIGTERM encerra de forma limpa)
 func main() {
 	_ = godotenv.Load()
 	cfg := config.Load()

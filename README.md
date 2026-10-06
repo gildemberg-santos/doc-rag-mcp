@@ -188,6 +188,19 @@ EMBED_PROVIDER=ollama docker compose up -d mcp-server
 Trocar de modelo Ollama (`OLLAMA_MODEL=mxbai-embed-large`) muda os dims
 (1024) → exige reindex (coleção recriada automaticamente).
 
+## Testes
+
+```bash
+make test               # unitários, sem dependências externas (httptest fakes)
+make test-integration   # contra um Qdrant real (precisa estar rodando)
+```
+
+Os testes de integração (`internal/indexer/integration_test.go`) só rodam
+com `RUN_QDRANT_INTEGRATION=1` — cobrem o ciclo incremental completo (diff
+por hash/mtime, streaming com persistência parcial, self-heal de uma
+atualização interrompida no meio) contra um Qdrant de verdade, em coleções
+descartáveis que são apagadas ao final de cada teste.
+
 ## Estrutura
 
 ```

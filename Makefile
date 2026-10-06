@@ -1,7 +1,16 @@
-.PHONY: tidy build run-http run-stdio index index-all docker-up docker-index docker-logs qdrant-ui ollama-pull docker-index-ollama docker-watch
+.PHONY: tidy build test test-integration run-http run-stdio index index-all docker-up docker-index docker-logs qdrant-ui ollama-pull docker-index-ollama docker-watch
 
 tidy:
 	go mod tidy
+
+test:
+	go test ./...
+
+# Testes de integração contra um Qdrant real (precisa estar rodando, ex.:
+# docker compose up -d qdrant). Não entram no `make test`/`go test ./...`
+# normal — usam coleções descartáveis próprias, limpas ao final.
+test-integration:
+	RUN_QDRANT_INTEGRATION=1 QDRANT_URL=$${QDRANT_URL:-http://localhost:6333} go test ./internal/indexer/... -run Integration -v
 
 build:
 	go build -o bin/mcp-server ./cmd/server

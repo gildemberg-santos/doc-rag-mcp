@@ -75,8 +75,8 @@ func (c *Client) EnsureCollection(ctx context.Context, vectorSize int) error {
 
 // Point representa um chunk indexado.
 type Point struct {
-	ID      string    `json:"id"`
-	Vector  []float32 `json:"vector"`
+	ID      string         `json:"id"`
+	Vector  []float32      `json:"vector"`
 	Payload map[string]any `json:"payload"`
 }
 

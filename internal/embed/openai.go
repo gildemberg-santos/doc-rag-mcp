@@ -16,6 +16,9 @@ type OpenAIEmbedder struct {
 	Model  string
 	dims   int
 	Client *http.Client
+	// BaseURL permite apontar para um endpoint compatível (proxy, Azure
+	// OpenAI, ou um httptest.Server nos testes). Default: api.openai.com.
+	BaseURL string
 }
 
 func New(apiKey, model string) *OpenAIEmbedder {
@@ -34,10 +37,11 @@ func NewWithDims(apiKey, model string, dims int) *OpenAIEmbedder {
 		}
 	}
 	return &OpenAIEmbedder{
-		APIKey: apiKey,
-		Model:  model,
-		dims:   dims,
-		Client: &http.Client{Timeout: 60 * time.Second},
+		APIKey:  apiKey,
+		Model:   model,
+		dims:    dims,
+		Client:  &http.Client{Timeout: 60 * time.Second},
+		BaseURL: "https://api.openai.com",
 	}
 }
 
@@ -80,7 +84,7 @@ func (e *OpenAIEmbedder) Embed(ctx context.Context, texts []string) ([][]float32
 
 func (e *OpenAIEmbedder) embedOnce(ctx context.Context, texts []string) ([][]float32, error) {
 	body, _ := json.Marshal(embedRequest{Model: e.Model, Input: texts})
-	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.openai.com/v1/embeddings", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", e.BaseURL+"/v1/embeddings", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}

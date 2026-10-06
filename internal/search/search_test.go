@@ -45,8 +45,8 @@ func TestKeywordScoreFilenameBoost(t *testing.T) {
 func TestFuseOrdersKeywordMatchFirst(t *testing.T) {
 	// Simula o caso da análise: arquivo denso repetido vs arquivo com match literal.
 	res := []Result{
-		{Project: "p", Path: "b.rb", Cos: 0.52, Kw: 1},   // 1 ocorrência
-		{Project: "p", Path: "a.rb", Cos: 0.50, Kw: 12},  // muitas ocorrências
+		{Project: "p", Path: "b.rb", Cos: 0.52, Kw: 1},  // 1 ocorrência
+		{Project: "p", Path: "a.rb", Cos: 0.50, Kw: 12}, // muitas ocorrências
 		{Project: "p", Path: "c.rb", Cos: 0.49, Kw: 6},
 	}
 	fuse(res, false)
