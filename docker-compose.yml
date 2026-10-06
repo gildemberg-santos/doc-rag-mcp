@@ -61,6 +61,8 @@ services:
     volumes:
       - ../neurolead:/projects/neurolead:ro
       - ../neurolead-client:/projects/neurolead-client:ro
+      - ../atendimento:/projects/atendimento:ro
+      - .:/projects/doc-rag-mcp:ro
     depends_on:
       - qdrant
     profiles: ["tools"]
@@ -83,6 +85,8 @@ services:
     volumes:
       - ../neurolead:/projects/neurolead:ro
       - ../neurolead-client:/projects/neurolead-client:ro
+      - ../atendimento:/projects/atendimento:ro
+      - .:/projects/doc-rag-mcp:ro
     depends_on:
       - qdrant
     profiles: ["watch"]
