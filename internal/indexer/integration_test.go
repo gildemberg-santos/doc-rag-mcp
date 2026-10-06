@@ -2,10 +2,13 @@ package indexer
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -157,6 +160,134 @@ func TestIntegrationIncrementalLifecycle(t *testing.T) {
 	}
 	if cnt != int64(n4) {
 		t.Fatalf("contagem no Qdrant (%d) deveria bater com o total reportado (%d)", cnt, n4)
+	}
+}
+
+// fetchPoints busca no Qdrant os pontos de um (projeto, path), já com
+// paginação — usado pra inspecionar o que realmente foi persistido, não só
+// contagens.
+func fetchPoints(t *testing.T, ctx context.Context, q *vector.Client, project, path string) []vector.ScoredPoint {
+	t.Helper()
+	filter := map[string]any{
+		"must": []any{
+			map[string]any{"key": "project", "match": map[string]any{"value": project}},
+			map[string]any{"key": "path", "match": map[string]any{"value": path}},
+		},
+	}
+	var all []vector.ScoredPoint
+	var offset any
+	for {
+		pts, next, err := q.Scroll(ctx, filter, 100, offset)
+		if err != nil {
+			t.Fatalf("fetchPoints: %v", err)
+		}
+		all = append(all, pts...)
+		if next == nil {
+			break
+		}
+		offset = next
+	}
+	return all
+}
+
+// TestIntegrationEditedFileIsPersistedCorrectly edita um arquivo e valida,
+// lendo de volta o que está salvo no Qdrant (não só contagens): o conteúdo
+// armazenado é o do arquivo editado (não ficou com a versão antiga), o
+// hash gravado bate com sha256 do conteúdo gravado, mtime/size acompanham
+// a edição, e o ponto é atualizado NO MESMO ID — sem duplicar.
+func TestIntegrationEditedFileIsPersistedCorrectly(t *testing.T) {
+	q := newIntegrationQdrant(t)
+	ctx := context.Background()
+	dir := t.TempDir()
+	e := &fakeEmbed{dims: 8}
+	project := "content-correctness-proj"
+	path := "doc.md"
+
+	writeFile(t, dir, path, "# Doc\nversão original do conteúdo\n")
+	if _, err := RunWithOptions(ctx, project, dir, q, e, Options{Clean: true}); err != nil {
+		t.Fatalf("run inicial: %v", err)
+	}
+
+	before := fetchPoints(t, ctx, q, project, path)
+	if len(before) != 1 {
+		t.Fatalf("esperava 1 ponto pro arquivo antes da edição, veio %d", len(before))
+	}
+	assertPayloadIsHealthy(t, before[0].Payload)
+	beforeContent, _ := before[0].Payload["content"].(string)
+	beforeMTime, _ := before[0].Payload["mtime"].(string)
+	beforeID := fmt.Sprint(before[0].ID)
+	if !strings.Contains(beforeContent, "versão original do conteúdo") {
+		t.Fatalf("conteúdo persistido não contém o texto original: %q", beforeContent)
+	}
+
+	// edita o arquivo com conteúdo bem diferente (tamanho e texto).
+	time.Sleep(10 * time.Millisecond)
+	newText := "# Doc\nconteúdo COMPLETAMENTE DIFERENTE depois da edição, bem maior que antes\n"
+	writeFile(t, dir, path, newText)
+	if _, err := RunWithOptions(ctx, project, dir, q, e, Options{Clean: false}); err != nil {
+		t.Fatalf("run incremental após edição: %v", err)
+	}
+
+	after := fetchPoints(t, ctx, q, project, path)
+	if len(after) != 1 {
+		t.Fatalf("esperava continuar com 1 ponto só (upsert no mesmo ID, sem duplicar), veio %d", len(after))
+	}
+	assertPayloadIsHealthy(t, after[0].Payload)
+
+	afterContent, _ := after[0].Payload["content"].(string)
+	afterMTime, _ := after[0].Payload["mtime"].(string)
+	afterID := fmt.Sprint(after[0].ID)
+
+	if afterID != beforeID {
+		t.Fatalf("ID do ponto mudou após edição (esperava upsert no mesmo ID): antes=%s depois=%s", beforeID, afterID)
+	}
+	if !strings.Contains(afterContent, "COMPLETAMENTE DIFERENTE") {
+		t.Fatalf("conteúdo persistido não reflete a edição: %q", afterContent)
+	}
+	if strings.Contains(afterContent, "versão original") {
+		t.Fatalf("conteúdo antigo ainda presente após a edição — não atualizou de verdade: %q", afterContent)
+	}
+	if afterMTime == beforeMTime {
+		t.Fatalf("mtime persistido não mudou após editar o arquivo (ficou %q)", afterMTime)
+	}
+
+	cnt, err := q.Count(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cnt != 1 {
+		t.Fatalf("coleção deveria ter só 1 ponto no total (nada duplicado), tem %d", cnt)
+	}
+}
+
+// assertPayloadIsHealthy confere que um ponto salvo no Qdrant é
+// internamente consistente: o hash gravado é realmente sha256 do conteúdo
+// gravado (não ficou de uma versão antiga nem foi calculado errado), e os
+// campos obrigatórios do payload estão presentes e com o tipo esperado.
+func assertPayloadIsHealthy(t *testing.T, payload map[string]any) {
+	t.Helper()
+	content, ok := payload["content"].(string)
+	if !ok || content == "" {
+		t.Fatalf("payload sem 'content' válido: %+v", payload)
+	}
+	hash, ok := payload["hash"].(string)
+	if !ok || hash == "" {
+		t.Fatalf("payload sem 'hash' válido: %+v", payload)
+	}
+	want := fmt.Sprintf("%x", sha256.Sum256([]byte(content)))
+	if hash != want {
+		t.Fatalf("hash gravado não bate com sha256(content): gravado=%s esperado=%s", hash, want)
+	}
+	for _, field := range []string{"project", "path", "language", "mtime", "indexed_at"} {
+		if v, ok := payload[field].(string); !ok || v == "" {
+			t.Errorf("payload sem campo string válido %q: %+v", field, payload)
+		}
+	}
+	if _, ok := payload["chunk_index"].(float64); !ok {
+		t.Errorf("payload sem 'chunk_index' numérico: %+v", payload)
+	}
+	if _, ok := payload["size"].(float64); !ok {
+		t.Errorf("payload sem 'size' numérico: %+v", payload)
 	}
 }
 
