@@ -1,0 +1,348 @@
+<title>doc-rag-mcp Status</title>
+<style>
+  :root{
+    --bg:#f5f4f0;
+    --surface:#ffffff;
+    --surface-2:#edece6;
+    --border:#dddad2;
+    --ink:#171a1f;
+    --ink-2:#4b5059;
+    --ink-3:#7b818c;
+    --accent:#1f6f8b;
+    --accent-ink:#0d3d4d;
+    --accent-soft:#e3eef1;
+    --good:#2f8f5b;
+    --good-soft:#e4f3ea;
+    --warn:#b9791c;
+    --warn-soft:#faf0de;
+    --crit:#c6414a;
+    --crit-soft:#fbe7e8;
+    --mono-surface:#171a1f;
+    --mono-ink:#dfe3e0;
+    --mono-accent:#7fd4a8;
+    --shadow: 0 1px 2px rgba(23,26,31,.06), 0 8px 24px -16px rgba(23,26,31,.18);
+  }
+  :root:not([data-theme="light"]){
+    @media (prefers-color-scheme: dark){
+      --bg:#10141a;
+      --surface:#171c24;
+      --surface-2:#1e242e;
+      --border:#2a313c;
+      --ink:#eef0f3;
+      --ink-2:#aeb4bf;
+      --ink-3:#7b828f;
+      --accent:#5bb8d4;
+      --accent-ink:#cdeef8;
+      --accent-soft:#1b3540;
+      --good:#52c285;
+      --good-soft:#163427;
+      --warn:#e0a53f;
+      --warn-soft:#3a2f16;
+      --crit:#e8646c;
+      --crit-soft:#3a1c1f;
+      --mono-surface:#0b0e12;
+      --mono-ink:#d7dcd9;
+      --mono-accent:#7fd4a8;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.6);
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#10141a;
+    --surface:#171c24;
+    --surface-2:#1e242e;
+    --border:#2a313c;
+    --ink:#eef0f3;
+    --ink-2:#aeb4bf;
+    --ink-3:#7b828f;
+    --accent:#5bb8d4;
+    --accent-ink:#cdeef8;
+    --accent-soft:#1b3540;
+    --good:#52c285;
+    --good-soft:#163427;
+    --warn:#e0a53f;
+    --warn-soft:#3a2f16;
+    --crit:#e8646c;
+    --crit-soft:#3a1c1f;
+    --mono-surface:#0b0e12;
+    --mono-ink:#d7dcd9;
+    --mono-accent:#7fd4a8;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.6);
+  }
+
+  *{box-sizing:border-box}
+  body{
+    background:var(--bg);
+    color:var(--ink);
+    font-family:"IBM Plex Sans",system-ui,-apple-system,sans-serif;
+    padding-inline:20px;
+    padding-block:28px 48px;
+    font-size:15px;
+    line-height:1.5;
+  }
+  .wrap{max-width:1080px;margin:0 auto;display:flex;flex-direction:column;gap:28px}
+
+  h1,h2,h3{font-family:"Fraunces",Georgia,serif;font-weight:600;letter-spacing:-0.01em;margin:0;text-wrap:balance}
+  .mono{font-family:"IBM Plex Mono",ui-monospace,Menlo,monospace}
+  .num{font-variant-numeric:tabular-nums}
+
+  /* ---- top bar ---- */
+  .topbar{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:14px;border-bottom:1px solid var(--border);padding-bottom:18px}
+  .topbar .title-row{display:flex;align-items:center;gap:12px}
+  .topbar h1{font-size:28px}
+  .eyebrow{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3);font-weight:600}
+  .snapshot-note{font-size:12.5px;color:var(--ink-3)}
+
+  .pill{
+    display:inline-flex;align-items:center;gap:6px;
+    padding:5px 12px 5px 10px;border-radius:100px;
+    font-size:13px;font-weight:600;white-space:nowrap;
+  }
+  .pill .dot{width:8px;height:8px;border-radius:50%;flex:none}
+  .pill.good{background:var(--good-soft);color:var(--good)}
+  .pill.good .dot{background:var(--good)}
+  .pill.warn{background:var(--warn-soft);color:var(--warn)}
+  .pill.warn .dot{background:var(--warn)}
+  .pill.crit{background:var(--crit-soft);color:var(--crit)}
+  .pill.crit .dot{background:var(--crit)}
+
+  /* ---- stat tiles ---- */
+  .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px}
+  .tile{
+    background:var(--surface);border:1px solid var(--border);border-radius:14px;
+    padding:16px 18px;box-shadow:var(--shadow);
+    display:flex;flex-direction:column;gap:6px;min-width:0;
+  }
+  .tile .label{font-size:12px;color:var(--ink-3);font-weight:600;text-transform:uppercase;letter-spacing:.05em}
+  .tile .value{font-family:"Fraunces",serif;font-size:30px;font-weight:600;line-height:1.1}
+  .tile .sub{font-size:12.5px;color:var(--ink-2)}
+  .tile .sub.good{color:var(--good)}
+  .tile .sub.warn{color:var(--warn)}
+
+  /* ---- section ---- */
+  section{display:flex;flex-direction:column;gap:14px}
+  .section-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px;flex-wrap:wrap}
+  .section-head h2{font-size:19px}
+  .section-head .hint{font-size:12.5px;color:var(--ink-3)}
+
+  .panel{background:var(--surface);border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow);padding:20px}
+
+  /* ---- chart ---- */
+  .chart-row{display:grid;grid-template-columns:1fr;gap:18px}
+  @media (min-width:760px){ .chart-row{grid-template-columns:1.3fr 1fr} }
+  .bars{display:flex;flex-direction:column;gap:14px}
+  .bar-item{display:grid;grid-template-columns:132px 1fr 64px;align-items:center;gap:10px}
+  .bar-item .name{font-size:13px;color:var(--ink-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .bar-track{background:var(--surface-2);border-radius:6px;height:14px;overflow:hidden}
+  .bar-fill{height:100%;border-radius:6px;background:var(--accent)}
+  .bar-item .count{font-size:13px;text-align:right;color:var(--ink);font-weight:600}
+
+  table{width:100%;border-collapse:collapse;font-size:13.5px}
+  th{text-align:left;color:var(--ink-3);font-weight:600;font-size:11.5px;text-transform:uppercase;letter-spacing:.05em;padding:0 10px 8px 0;border-bottom:1px solid var(--border)}
+  td{padding:9px 10px 9px 0;border-bottom:1px solid var(--border);vertical-align:top}
+  tr:last-child td{border-bottom:none}
+  .muted{color:var(--ink-3)}
+
+  /* ---- capability cards ---- */
+  .cap-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}
+  .cap-card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:16px 18px;box-shadow:var(--shadow);display:flex;flex-direction:column;gap:8px}
+  .cap-card .cap-name{font-family:"IBM Plex Mono",monospace;font-size:13.5px;font-weight:600;color:var(--accent-ink);background:var(--accent-soft);display:inline-block;padding:2px 8px;border-radius:6px;width:fit-content}
+  .cap-card p{margin:0;font-size:13px;color:var(--ink-2);line-height:1.5}
+
+  /* ---- terminal ---- */
+  .terminal{
+    background:var(--mono-surface);color:var(--mono-ink);border-radius:12px;
+    padding:16px 18px;font-family:"IBM Plex Mono",monospace;font-size:12.5px;line-height:1.65;
+    overflow-x:auto;
+  }
+  .terminal .ok{color:var(--mono-accent)}
+  .terminal .ts{color:#6d7b76}
+
+  /* ---- timeline ---- */
+  .timeline{display:flex;flex-direction:column;gap:0}
+  .tl-item{display:grid;grid-template-columns:18px 1fr;gap:12px;padding-block:9px;position:relative}
+  .tl-item:not(:last-child)::before{content:"";position:absolute;left:5px;top:24px;bottom:-9px;width:1px;background:var(--border)}
+  .tl-dot{width:9px;height:9px;border-radius:50%;background:var(--accent);margin-top:5px}
+  .tl-item .tl-msg{font-size:13.5px}
+  .tl-item .tl-hash{font-family:"IBM Plex Mono",monospace;font-size:11.5px;color:var(--ink-3)}
+
+  footer{font-size:12px;color:var(--ink-3);border-top:1px solid var(--border);padding-top:14px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px}
+</style>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+
+<div class="wrap">
+
+  <div class="topbar">
+    <div>
+      <div class="eyebrow">doc-rag-mcp &middot; snapshot operacional</div>
+      <div class="title-row">
+        <h1>Status do serviço</h1>
+        <span class="pill good"><span class="dot"></span>Qdrant OK</span>
+      </div>
+    </div>
+    <div class="snapshot-note">
+      Capturado em <span class="mono num">06/10/2026 01:00 UTC</span><br>
+      Snapshot estático &mdash; não atualiza sozinho
+    </div>
+  </div>
+
+  <div class="tiles">
+    <div class="tile">
+      <div class="label">Pontos indexados</div>
+      <div class="value num">57.955</div>
+      <div class="sub">coleção <span class="mono">docs-ollama</span> &middot; 768 dims</div>
+    </div>
+    <div class="tile">
+      <div class="label">Projetos ativos</div>
+      <div class="value num">4</div>
+      <div class="sub">atendimento, doc-rag-mcp, neurolead, neurolead-client</div>
+    </div>
+    <div class="tile">
+      <div class="label">Processo --watch</div>
+      <div class="value num">vivo</div>
+      <div class="sub good">PID 368443 &middot; ciclo a cada 10min</div>
+    </div>
+    <div class="tile">
+      <div class="label">Testes</div>
+      <div class="value num">110/110</div>
+      <div class="sub good">10 pacotes &middot; 0 falhas</div>
+    </div>
+    <div class="tile">
+      <div class="label">Último ciclo</div>
+      <div class="value num">1.97s</div>
+      <div class="sub">4 ok, 0 falhas &middot; 21:56:50</div>
+    </div>
+  </div>
+
+  <section>
+    <div class="section-head">
+      <h2>Projetos &amp; índice</h2>
+      <span class="hint">chunks por projeto, dados reais do último ciclo</span>
+    </div>
+    <div class="panel chart-row">
+      <div class="bars" aria-label="chunks indexados por projeto">
+        <div class="bar-item">
+          <span class="name">atendimento</span>
+          <div class="bar-track"><div class="bar-fill" style="width:100%"></div></div>
+          <span class="count num">37.878</span>
+        </div>
+        <div class="bar-item">
+          <span class="name">neurolead</span>
+          <div class="bar-track"><div class="bar-fill" style="width:50.1%"></div></div>
+          <span class="count num">18.982</span>
+        </div>
+        <div class="bar-item">
+          <span class="name">neurolead-client</span>
+          <div class="bar-track"><div class="bar-fill" style="width:2.4%"></div></div>
+          <span class="count num">916</span>
+        </div>
+        <div class="bar-item">
+          <span class="name">doc-rag-mcp</span>
+          <div class="bar-track"><div class="bar-fill" style="width:0.5%"></div></div>
+          <span class="count num">179</span>
+        </div>
+      </div>
+      <table>
+        <thead><tr><th>Projeto</th><th>Chunks</th><th>Atualizado</th></tr></thead>
+        <tbody>
+          <tr><td>atendimento</td><td class="num">37.878</td><td class="muted mono">00:51:58Z</td></tr>
+          <tr><td>neurolead</td><td class="num">18.982</td><td class="muted mono">00:15:41Z</td></tr>
+          <tr><td>neurolead-client</td><td class="num">916</td><td class="muted mono">00:18:20Z</td></tr>
+          <tr><td>doc-rag-mcp</td><td class="num">179</td><td class="muted mono">00:48:42Z</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <h2>Infraestrutura</h2>
+      <span class="hint">o que o index_status e o processo em background reportam agora</span>
+    </div>
+    <div class="panel">
+      <table>
+        <tbody>
+          <tr><td style="width:180px" class="muted">Provider de embedding</td><td class="mono">ollama (nomic-embed-text, 768 dims)</td></tr>
+          <tr><td class="muted">Coleção ativa</td><td class="mono">docs-ollama &middot; 57.955 pontos</td></tr>
+          <tr><td class="muted">Coleção legada</td><td class="mono">docs (openai) &middot; 19.920 pontos &middot; <span class="muted">não usada pela config atual (EMBED_PROVIDER=ollama)</span></td></tr>
+          <tr><td class="muted">URL do Qdrant</td><td class="mono">http://qdrant:6333 <span class="muted">(rede interna do serviço)</span></td></tr>
+          <tr><td class="muted">Indexer <span class="mono">--watch</span></td><td class="mono">PID 368443 &middot; intervalo 10m &middot; próximo ciclo ~22:06:50</td></tr>
+          <tr><td class="muted">Modo de indexação</td><td class="mono">incremental ➕ (hash + mtime skip, streaming em lotes)</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <h2>Funcionalidades (ferramentas MCP)</h2>
+      <span class="hint">as 6 tools expostas pelo servidor, expostas via <span class="mono">cmd/server</span></span>
+    </div>
+    <div class="cap-grid">
+      <div class="cap-card">
+        <span class="cap-name">search_docs</span>
+        <p>Busca semântica + keyword no código/docs indexados, com diversidade por arquivo e rerank por match literal.</p>
+      </div>
+      <div class="cap-card">
+        <span class="cap-name">grep_docs</span>
+        <p>Inventário literal: todos os arquivos indexados que contêm um termo, com nº de ocorrências e trecho.</p>
+      </div>
+      <div class="cap-card">
+        <span class="cap-name">get_document</span>
+        <p>Devolve o conteúdo completo (todos os chunks, em ordem) de um arquivo indexado.</p>
+      </div>
+      <div class="cap-card">
+        <span class="cap-name">list_projects</span>
+        <p>Lista os projetos indexados com contagem de chunks e data da última atualização.</p>
+      </div>
+      <div class="cap-card">
+        <span class="cap-name">list_docs</span>
+        <p>Lista os arquivos de um projeto, com filtro por prefixo de diretório.</p>
+      </div>
+      <div class="cap-card">
+        <span class="cap-name">index_status</span>
+        <p>Status do índice vetorial: provider, coleção, dims, total de pontos e URL do Qdrant.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <h2>Último ciclo (log real)</h2>
+      <span class="hint">saída verbatim do indexer em <span class="mono">--watch</span></span>
+    </div>
+    <div class="terminal">
+<div><span class="ts">21:56:48</span> 🐾 [atendimento] diff: 37878 pontos existentes em 854ms</div>
+<div><span class="ts">21:56:49</span> 🐾 [atendimento] scan+embed: 37878 chunks (37878 inalterados) em 64ms</div>
+<div><span class="ok">21:56:49 ✅ [atendimento] 37878 chunks indexados — total em 921ms</span></div>
+<div><span class="ts">21:56:50</span> 🐾 [neurolead] diff: 18982 pontos existentes em 782ms</div>
+<div><span class="ok">21:56:50 ✅ [neurolead] 18982 chunks indexados — total em 930ms</span></div>
+<div><span class="ok">21:56:50 ✅ [neurolead-client] 916 chunks indexados — total em 77ms</span></div>
+<div><span class="ok">21:56:49 ✅ [doc-rag-mcp] 179 chunks indexados — total em 44ms</span></div>
+<div>&nbsp;</div>
+<div>🐱 ─── total: 57955 chunks em 1.971s (4 ok, 0 falhas) ───🐱</div>
+<div>🐾 próximo ciclo em 10m0s...</div>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <h2>Mudanças recentes</h2>
+      <span class="hint">últimos commits em <span class="mono">main</span></span>
+    </div>
+    <div class="panel">
+      <div class="timeline">
+        <div class="tl-item"><div class="tl-dot"></div><div><div class="tl-msg">test: valida conteúdo persistido no Qdrant após editar um arquivo</div><div class="tl-hash">a4ab1b8</div></div></div>
+        <div class="tl-item"><div class="tl-dot"></div><div><div class="tl-msg">test: cobertura completa de testes em todos os pacotes</div><div class="tl-hash">4c6332c</div></div></div>
+        <div class="tl-item"><div class="tl-dot"></div><div><div class="tl-msg">fix: evita indexar config com segredos e saída de build compilada</div><div class="tl-hash">99acf44</div></div></div>
+        <div class="tl-item"><div class="tl-dot"></div><div><div class="tl-msg">feat: indexação incremental com dedup por hash, streaming e watch periódico</div><div class="tl-hash">bfc28e8</div></div></div>
+        <div class="tl-item"><div class="tl-dot"></div><div><div class="tl-msg">feat: Implement RAG tools for semantic search and document retrieval</div><div class="tl-hash">65c5e1d</div></div></div>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <span>doc-rag-mcp &middot; MCP server para busca semântica de código</span>
+    <span>Pra atualizar: peça um novo snapshot</span>
+  </footer>
+
+</div>
