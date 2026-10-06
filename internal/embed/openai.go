@@ -122,3 +122,25 @@ func (e *OpenAIEmbedder) EmbedQuery(ctx context.Context, q string) ([]float32, e
 	}
 	return vecs[0], nil
 }
+
+// Ping confere a API key contra um endpoint de leitura (não gera nenhum
+// embedding, não tem custo de tokens).
+func (e *OpenAIEmbedder) Ping(ctx context.Context) error {
+	if e.APIKey == "" {
+		return fmt.Errorf("OPENAI_API_KEY não configurada")
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", e.BaseURL+"/v1/models", nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+e.APIKey)
+	resp, err := e.Client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("openai /v1/models respondeu status=%d", resp.StatusCode)
+	}
+	return nil
+}

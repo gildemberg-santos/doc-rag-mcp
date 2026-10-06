@@ -11,7 +11,9 @@ import (
 	"syscall"
 
 	"doc-rag-mcp/internal/config"
+	"doc-rag-mcp/internal/dockerstat"
 	"doc-rag-mcp/internal/embed"
+	"doc-rag-mcp/internal/history"
 	"doc-rag-mcp/internal/httpapi"
 	"doc-rag-mcp/internal/mcpserver"
 	"doc-rag-mcp/internal/vector"
@@ -63,11 +65,11 @@ func main() {
 			log.Fatalf("stdio: %v", err)
 		}
 	case "http":
-		runHTTP(ctx, *httpAddr, srv, q, e)
+		runHTTP(ctx, *httpAddr, srv, q, e, cfg)
 	case "both":
 		// HTTP em background + stdio em foreground (para Claude Code + remoto ao mesmo tempo)
 		go func() {
-			if err := runHTTP(context.Background(), *httpAddr, srv, q, e); err != nil {
+			if err := runHTTP(context.Background(), *httpAddr, srv, q, e, cfg); err != nil {
 				log.Printf("http: %v", err)
 			}
 		}()
@@ -88,17 +90,34 @@ func firstNonEmpty(a, b string) string {
 	return b
 }
 
-func runHTTP(ctx context.Context, addr string, srv *mcp.Server, q *vector.Client, e embed.Provider) error {
+func runHTTP(ctx context.Context, addr string, srv *mcp.Server, q *vector.Client, e embed.Provider, cfg config.Config) error {
 	mcpHandler := mcp.NewStreamableHTTPHandler(func(_ *http.Request) *mcp.Server {
 		return srv
 	}, nil)
-	aux := &httpapi.Handler{Qdrant: q, Embedder: e}
+	aux := httpapi.New(q, e)
+	aux.IndexerStatusFile = cfg.IndexerStatusFile
+	aux.History = history.New(cfg.HistoryFile)
+	if cfg.DockerSocket != "" {
+		aux.Docker = dockerstat.New(cfg.DockerSocket)
+		aux.ComposeProject = cfg.ComposeProject
+		log.Printf("docker-stat: socket=%s projeto=%q (opt-in, só leitura)", cfg.DockerSocket, cfg.ComposeProject)
+	}
+	if aux.IndexerStatusFile != "" {
+		log.Printf("indexer-status: lendo heartbeat de %s", aux.IndexerStatusFile)
+	}
+	if cfg.HistoryFile != "" {
+		log.Printf("status-history: persistindo série em %s", cfg.HistoryFile)
+	}
 
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", mcpHandler)
+	// Métricas de uso (Nível 1): contam /mcp (tools reais) + /search
+	// (debug REST). /status, /dashboard e /health ficam de fora — são
+	// observabilidade, não uso.
+	mux.Handle("/mcp", httpapi.Metrics(aux, mcpHandler))
+	mux.Handle("/search", httpapi.Metrics(aux, http.HandlerFunc(aux.Search)))
 	mux.HandleFunc("/health", aux.Health)
-	mux.HandleFunc("/search", aux.Search)
 	mux.HandleFunc("/status", aux.Status)
+	mux.HandleFunc("/status/history", aux.HistoryHandler)
 	mux.HandleFunc("/dashboard", aux.Dashboard)
 
 	httpSrv := &http.Server{Addr: addr, Handler: mux}

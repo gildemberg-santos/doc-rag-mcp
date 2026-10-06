@@ -188,6 +188,28 @@ EMBED_PROVIDER=ollama docker compose up -d mcp-server
 Trocar de modelo Ollama (`OLLAMA_MODEL=mxbai-embed-large`) muda os dims
 (1024) → exige reindex (coleção recriada automaticamente).
 
+## Observabilidade (`/status` + `/dashboard`)
+
+`GET /dashboard` é uma página viva (mesma origem, sem CDN) que lê
+`GET /status` a cada 5s. O que cada nível mostra — tudo com dados reais,
+nada de hipótese:
+
+| Nível | Seção | Fonte real | Custo |
+|---|---|---|---|
+| 1 | Saúde da coleção (`status`, `optimizer_status`, `segments_count`) | Qdrant `GET /collections/{ativa}` | nenhum acesso novo |
+| 1 | `indexed_vectors_count` vs `points_count` (aviso quando diff > 1000 ou > 5%) | mesmo `GET` acima | — |
+| 1 | Coleções órfãs (ex.: `docs` OpenAI parada enquanto `EMBED_PROVIDER=ollama`) | `GET /collections` + count por coleção | — |
+| 1 | `dims_mismatch` (provider X dims da coleção — o bug documentado aqui vira aviso ativo) | compara `Embedder.Dims()` com `vectors.size` | — |
+| 1 | Saúde do embedding (Ollama responde + tem o modelo? OpenAI key válida?) | ping barato, sem gerar embedding (cache 30s) | — |
+| 1 | Self do processo (uptime, goroutines, heap) + uso (`/mcp` contados via middleware, latência média) | `runtime` + contador atômico | — |
+| 2 | Status do `indexer --watch` (último ciclo, duração, falhas, próximo ciclo) | heartbeat JSON que o indexer grava em `INDEXER_STATUS_FILE` (volume `status_state` compartilhado) | 1 volume a mais |
+| 3 | Containers do projeto (estado de cada um) | Docker Engine API via socket Unix (`DOCKER_SOCKET`, só `GET` de leitura) | **privilegiado**: montar o socket dá ao container acesso à API do daemon — opt-in, descomente o volume no compose |
+| 3 | Histórico (sparkline de pontos + requisições) | `GET /status/history?n=120` — 1 sample por `/status` real, em memória + JSONL (`STATUS_HISTORY_FILE`) | 1 arquivo que cresce (~1 linha por `/status` real; `tail -n` + rotação externa resolvem) |
+
+Sem o volume compartilhado, a seção do indexer some (não quebra o resto).
+Sem o socket, a seção de containers some. Sem `STATUS_HISTORY_FILE`, o
+histórico vive só em memória (720 samples, perde no restart).
+
 ## Testes
 
 ```bash
@@ -229,3 +251,7 @@ internal/httpapi   → /health + /search debug
 | `QDRANT_COLLECTION` | `docs` | base; ollama usa `docs-ollama` |
 | `PROJECTS_ROOT` | `/projects` | raiz dos projetos |
 | `HTTP_PORT` | `8080` | porta HTTP |
+| `INDEXER_STATUS_FILE` | — | heartbeat do `--watch` (omitido se vazio) |
+| `STATUS_HISTORY_FILE` | — | JSONL da série temporal (só memória se vazio) |
+| `DOCKER_SOCKET` | — | socket Docker opt-in (omitido se vazio) |
+| `COMPOSE_PROJECT_NAME` | — | filtra containers por projeto (vazio = todos) |

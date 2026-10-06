@@ -215,3 +215,89 @@ func (c *Client) Count(ctx context.Context) (int64, error) {
 	}
 	return out.Result.Count, nil
 }
+
+// CountFor conta pontos de uma coleção arbitrária (não necessariamente
+// c.Collection) — usado pra inspecionar coleções órfãs/legadas.
+func (c *Client) CountFor(ctx context.Context, collection string) (int64, error) {
+	var out struct {
+		Result struct {
+			Count int64 `json:"count"`
+		} `json:"result"`
+	}
+	if _, err := c.do(ctx, "POST", "/collections/"+collection+"/points/count", map[string]any{}, &out); err != nil {
+		return 0, err
+	}
+	return out.Result.Count, nil
+}
+
+// CollectionInfo é o resumo de saúde/config de uma coleção Qdrant.
+type CollectionInfo struct {
+	Status              string
+	OptimizerStatus     string
+	PointsCount         int64
+	IndexedVectorsCount int64
+	SegmentsCount       int
+	VectorSize          int
+	Distance            string
+}
+
+// CollectionInfo busca status/config da coleção ativa (c.Collection) —
+// GET /collections/{name}, o que Count() não traz (segmentos, otimizador,
+// dims configurados).
+func (c *Client) CollectionInfo(ctx context.Context) (CollectionInfo, error) {
+	var out struct {
+		Result struct {
+			Status              string `json:"status"`
+			OptimizerStatus     any    `json:"optimizer_status"` // "ok" ou {"error": "..."}
+			PointsCount         int64  `json:"points_count"`
+			IndexedVectorsCount int64  `json:"indexed_vectors_count"`
+			SegmentsCount       int    `json:"segments_count"`
+			Config              struct {
+				Params struct {
+					Vectors struct {
+						Size     int    `json:"size"`
+						Distance string `json:"distance"`
+					} `json:"vectors"`
+				} `json:"params"`
+			} `json:"config"`
+		} `json:"result"`
+	}
+	if _, err := c.do(ctx, "GET", "/collections/"+c.Collection, nil, &out); err != nil {
+		return CollectionInfo{}, err
+	}
+	optimizerStatus := "ok"
+	if s, ok := out.Result.OptimizerStatus.(string); ok {
+		optimizerStatus = s
+	} else if out.Result.OptimizerStatus != nil {
+		optimizerStatus = "error"
+	}
+	return CollectionInfo{
+		Status:              out.Result.Status,
+		OptimizerStatus:     optimizerStatus,
+		PointsCount:         out.Result.PointsCount,
+		IndexedVectorsCount: out.Result.IndexedVectorsCount,
+		SegmentsCount:       out.Result.SegmentsCount,
+		VectorSize:          out.Result.Config.Params.Vectors.Size,
+		Distance:            out.Result.Config.Params.Vectors.Distance,
+	}, nil
+}
+
+// ListCollectionNames lista todas as coleções existentes no Qdrant (não só
+// a ativa) — usado pra detectar coleções órfãs/legadas.
+func (c *Client) ListCollectionNames(ctx context.Context) ([]string, error) {
+	var out struct {
+		Result struct {
+			Collections []struct {
+				Name string `json:"name"`
+			} `json:"collections"`
+		} `json:"result"`
+	}
+	if _, err := c.do(ctx, "GET", "/collections", nil, &out); err != nil {
+		return nil, err
+	}
+	names := make([]string, len(out.Result.Collections))
+	for i, col := range out.Result.Collections {
+		names[i] = col.Name
+	}
+	return names, nil
+}

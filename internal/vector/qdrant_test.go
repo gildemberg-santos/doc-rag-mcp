@@ -311,6 +311,83 @@ func TestScrollOmitsOffsetWhenNil(t *testing.T) {
 	}
 }
 
+func TestCountForArbitraryCollection(t *testing.T) {
+	var gotPath string
+	c, _ := newFakeQdrant(t, func(w http.ResponseWriter, r *http.Request, body map[string]any) {
+		gotPath = r.URL.Path
+		writeJSON(w, 200, map[string]any{"result": map[string]any{"count": 19920}})
+	})
+	n, err := c.CountFor(context.Background(), "docs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 19920 {
+		t.Fatalf("esperava 19920, veio %d", n)
+	}
+	if !strings.Contains(gotPath, "/collections/docs/points/count") {
+		t.Fatalf("esperava consultar a coleção 'docs' explicitamente, path foi %q", gotPath)
+	}
+}
+
+func TestCollectionInfoParsesHealthAndConfig(t *testing.T) {
+	c, _ := newFakeQdrant(t, func(w http.ResponseWriter, r *http.Request, body map[string]any) {
+		writeJSON(w, 200, map[string]any{"result": map[string]any{
+			"status":                "green",
+			"optimizer_status":      "ok",
+			"points_count":          57990,
+			"indexed_vectors_count": 60754,
+			"segments_count":        8,
+			"config": map[string]any{
+				"params": map[string]any{
+					"vectors": map[string]any{"size": 768, "distance": "Cosine"},
+				},
+			},
+		}})
+	})
+	info, err := c.CollectionInfo(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := CollectionInfo{
+		Status: "green", OptimizerStatus: "ok", PointsCount: 57990,
+		IndexedVectorsCount: 60754, SegmentsCount: 8, VectorSize: 768, Distance: "Cosine",
+	}
+	if info != want {
+		t.Fatalf("got %+v, want %+v", info, want)
+	}
+}
+
+func TestCollectionInfoDetectsOptimizerError(t *testing.T) {
+	c, _ := newFakeQdrant(t, func(w http.ResponseWriter, r *http.Request, body map[string]any) {
+		writeJSON(w, 200, map[string]any{"result": map[string]any{
+			"status":           "red",
+			"optimizer_status": map[string]any{"error": "disk full"},
+		}})
+	})
+	info, err := c.CollectionInfo(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.OptimizerStatus != "error" {
+		t.Fatalf("esperava optimizer_status='error' quando o campo vem como objeto, veio %q", info.OptimizerStatus)
+	}
+}
+
+func TestListCollectionNames(t *testing.T) {
+	c, _ := newFakeQdrant(t, func(w http.ResponseWriter, r *http.Request, body map[string]any) {
+		writeJSON(w, 200, map[string]any{"result": map[string]any{
+			"collections": []map[string]any{{"name": "docs"}, {"name": "docs-ollama"}},
+		}})
+	})
+	names, err := c.ListCollectionNames(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 2 || names[0] != "docs" || names[1] != "docs-ollama" {
+		t.Fatalf("esperava [docs docs-ollama], veio %v", names)
+	}
+}
+
 func TestCountParsesResult(t *testing.T) {
 	c, _ := newFakeQdrant(t, func(w http.ResponseWriter, r *http.Request, body map[string]any) {
 		writeJSON(w, 200, map[string]any{"result": map[string]any{"count": 57886}})

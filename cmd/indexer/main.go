@@ -14,6 +14,7 @@ import (
 	"doc-rag-mcp/internal/config"
 	"doc-rag-mcp/internal/embed"
 	"doc-rag-mcp/internal/indexer"
+	"doc-rag-mcp/internal/indexerstatus"
 	"doc-rag-mcp/internal/vector"
 
 	"github.com/joho/godotenv"
@@ -42,6 +43,7 @@ func main() {
 	batchSize := flag.Int("batch-size", 64, "tamanho do lote de embed+upsert (streaming: controla memória e quanto se perde se falhar no meio)")
 	watch := flag.Bool("watch", false, "modo contínuo: repete a indexação incremental a cada --interval, até Ctrl-C/SIGTERM (ignora --no-clean=false — força incremental em todo ciclo)")
 	interval := flag.Duration("interval", 10*time.Minute, "intervalo entre ciclos no modo --watch (ex.: 5m, 30s)")
+	statusFile := flag.String("status-file", os.Getenv("INDEXER_STATUS_FILE"), "caminho pra gravar um heartbeat JSON após cada ciclo (default: $INDEXER_STATUS_FILE, vazio desliga) — pra outro processo (ex. mcp-server) ler o status do --watch sem acesso a este processo")
 	flag.Parse()
 
 	t0 := time.Now()
@@ -84,6 +86,12 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	q := vector.New(cfg.QdrantURL, collection)
+
+	if *statusFile != "" {
+		if err := indexerstatus.EnsureDir(*statusFile); err != nil {
+			log.Printf("🐾 aviso: não consegui preparar o diretório de %s: %v", *statusFile, err)
+		}
+	}
 
 	// Resolve o alvo single-project uma vez (não muda entre ciclos). O modo
 	// --all redescobre projetos a cada ciclo, pra pegar pastas novas.
@@ -161,6 +169,33 @@ func main() {
 		}
 		fmt.Printf("🐱 ─── total: %d chunks em %s (%d ok, %d falhas) ─── 🐱\n",
 			total, time.Since(cycleStart).Round(time.Millisecond), len(results)-fails, fails)
+
+		if *statusFile != "" {
+			st := indexerstatus.Status{
+				UpdatedAt:       time.Now().UTC().Format(time.RFC3339),
+				IntervalSeconds: int(interval.Seconds()),
+				CycleStartedAt:  cycleStart.UTC().Format(time.RFC3339),
+				CycleDurationMs: time.Since(cycleStart).Milliseconds(),
+				TotalChunks:     total,
+				OKCount:         len(results) - fails,
+				FailCount:       fails,
+			}
+			for _, r := range results {
+				errMsg := ""
+				if r.err != nil {
+					errMsg = r.err.Error()
+				}
+				st.Projects = append(st.Projects, indexerstatus.ProjectCycle{
+					Project: r.project, Chunks: r.chunks, DurationMs: r.took.Milliseconds(), Error: errMsg,
+				})
+			}
+			if *watch && !canceled {
+				st.NextCycleAt = time.Now().Add(*interval).UTC().Format(time.RFC3339)
+			}
+			if err := indexerstatus.Write(*statusFile, st); err != nil {
+				log.Printf("🐾 aviso: não gravei o status em %s: %v", *statusFile, err)
+			}
+		}
 		return fails, canceled
 	}
 

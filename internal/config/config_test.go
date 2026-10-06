@@ -11,6 +11,7 @@ func clearEnv(t *testing.T) {
 		"QDRANT_URL", "QDRANT_COLLECTION", "EMBED_PROVIDER", "OPENAI_API_KEY",
 		"OPENAI_EMBED_MODEL", "OPENAI_EMBED_DIMS", "OLLAMA_URL", "OLLAMA_MODEL",
 		"OLLAMA_EMBED_DIMS", "PROJECTS_ROOT", "HTTP_PORT", "MCP_NAME", "MCP_VERSION",
+		"INDEXER_STATUS_FILE", "DOCKER_SOCKET", "COMPOSE_PROJECT_NAME", "STATUS_HISTORY_FILE",
 	} {
 		t.Setenv(k, "")
 	}
@@ -33,6 +34,11 @@ func TestLoadDefaults(t *testing.T) {
 		HTTPPort:         "8080",
 		MCPName:          "doc-rag-mcp",
 		MCPVersion:       "1.0.0",
+		// Nível 2/3: vazios por default = seções omitidas no /status.
+		IndexerStatusFile: "",
+		DockerSocket:      "",
+		ComposeProject:    "",
+		HistoryFile:       "",
 	}
 	if cfg != want {
 		t.Fatalf("defaults errados:\n got  %+v\n want %+v", cfg, want)
@@ -84,5 +90,26 @@ func TestLoadCustomValuesOverrideDefaults(t *testing.T) {
 	cfg := Load()
 	if cfg.QdrantURL != "http://qdrant:6333" || cfg.EmbedProvider != "ollama" || cfg.ProjectsRoot != "/meus-projetos" {
 		t.Fatalf("valores customizados não foram respeitados: %+v", cfg)
+	}
+}
+
+func TestLoadObservabilityEnv(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("INDEXER_STATUS_FILE", "/state/indexer-status.json")
+	t.Setenv("DOCKER_SOCKET", "/var/run/docker.sock")
+	t.Setenv("COMPOSE_PROJECT_NAME", "meu-projeto")
+	t.Setenv("STATUS_HISTORY_FILE", "/state/history.jsonl")
+	cfg := Load()
+	if cfg.IndexerStatusFile != "/state/indexer-status.json" {
+		t.Errorf("INDEXER_STATUS_FILE não lido: %q", cfg.IndexerStatusFile)
+	}
+	if cfg.DockerSocket != "/var/run/docker.sock" {
+		t.Errorf("DOCKER_SOCKET não lido: %q", cfg.DockerSocket)
+	}
+	if cfg.ComposeProject != "meu-projeto" {
+		t.Errorf("COMPOSE_PROJECT_NAME não lido: %q", cfg.ComposeProject)
+	}
+	if cfg.HistoryFile != "/state/history.jsonl" {
+		t.Errorf("STATUS_HISTORY_FILE não lido: %q", cfg.HistoryFile)
 	}
 }

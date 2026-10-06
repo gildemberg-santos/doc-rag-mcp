@@ -35,10 +35,23 @@ services:
       OLLAMA_MODEL: ${OLLAMA_MODEL:-nomic-embed-text}
       PROJECTS_ROOT: /projects
       HTTP_PORT: "8080"
+      # Nível 2 — heartbeat do indexer --watch (volume compartilhado).
+      INDEXER_STATUS_FILE: /state/indexer-status.json
+      # Nível 3 — série temporal do /status (persiste no mesmo volume).
+      STATUS_HISTORY_FILE: /state/history.jsonl
+      # Nível 3 — socket Docker (OPT-IN, privilegiado: mesmo ":ro", o
+      # container passa a falar com o daemon e enxergar outros containers;
+      # o servidor só faz GET de leitura — ver internal/dockerstat).
+      # Pra ativar: descomente o volume abaixo. Vazio = seção omitida.
+      DOCKER_SOCKET: /var/run/docker.sock
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-}
     volumes:
       # monte seus projetos como read-only:
       - ../neurolead:/projects/neurolead:ro
       - ../neurolead-client:/projects/neurolead-client:ro
+      - status_state:/state
+      # Nível 3 (opt-in, ver aviso acima):
+      # - /var/run/docker.sock:/var/run/docker.sock:ro
     depends_on:
       - qdrant
     restart: unless-stopped
@@ -58,11 +71,13 @@ services:
       OLLAMA_URL: http://ollama:11434
       OLLAMA_MODEL: ${OLLAMA_MODEL:-nomic-embed-text}
       PROJECTS_ROOT: /projects
+      INDEXER_STATUS_FILE: /state/indexer-status.json
     volumes:
       - ../neurolead:/projects/neurolead:ro
       - ../neurolead-client:/projects/neurolead-client:ro
       - ../atendimento:/projects/atendimento:ro
       - .:/projects/doc-rag-mcp:ro
+      - status_state:/state
     depends_on:
       - qdrant
     profiles: ["tools"]
@@ -82,11 +97,13 @@ services:
       OLLAMA_URL: http://ollama:11434
       OLLAMA_MODEL: ${OLLAMA_MODEL:-nomic-embed-text}
       PROJECTS_ROOT: /projects
+      INDEXER_STATUS_FILE: /state/indexer-status.json
     volumes:
       - ../neurolead:/projects/neurolead:ro
       - ../neurolead-client:/projects/neurolead-client:ro
       - ../atendimento:/projects/atendimento:ro
       - .:/projects/doc-rag-mcp:ro
+      - status_state:/state
     depends_on:
       - qdrant
     profiles: ["watch"]
@@ -96,3 +113,4 @@ services:
 volumes:
   qdrant_storage:
   ollama_data:
+  status_state:

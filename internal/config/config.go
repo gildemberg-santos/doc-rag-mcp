@@ -20,6 +20,17 @@ type Config struct {
 	HTTPPort         string
 	MCPName          string
 	MCPVersion       string
+
+	// Nível 2 — heartbeat do indexer --watch (arquivo compartilhado).
+	// Vazio = seção omitida no /status.
+	IndexerStatusFile string
+	// Nível 3 — socket Docker (opt-in, privilegiado) + projeto compose
+	// pra filtrar containers. Vazio = seção omitida.
+	DockerSocket   string
+	ComposeProject string
+	// Nível 3 — série temporal: arquivo JSONL onde cada /status real
+	// anexa um sample. Vazio = só buffer em memória.
+	HistoryFile string
 }
 
 func getenv(key, def string) string {
@@ -43,19 +54,23 @@ func Load() Config {
 		dims = 3072
 	}
 	return Config{
-		QdrantURL:        getenv("QDRANT_URL", "http://localhost:6333"),
-		Collection:       getenv("QDRANT_COLLECTION", "docs"),
-		EmbedProvider:    getenv("EMBED_PROVIDER", "openai"),
-		OpenAIAPIKey:     os.Getenv("OPENAI_API_KEY"),
-		OpenAIEmbedModel: model,
-		EmbedDims:        dims,
-		OllamaURL:        getenv("OLLAMA_URL", "http://localhost:11434"),
-		OllamaModel:      getenv("OLLAMA_MODEL", "nomic-embed-text"),
-		OllamaDims:       ollamaDims(),
-		ProjectsRoot:     getenv("PROJECTS_ROOT", "/projects"),
-		HTTPPort:         getenv("HTTP_PORT", "8080"),
-		MCPName:          getenv("MCP_NAME", "doc-rag-mcp"),
-		MCPVersion:       getenv("MCP_VERSION", "1.0.0"),
+		QdrantURL:         getenv("QDRANT_URL", "http://localhost:6333"),
+		Collection:        getenv("QDRANT_COLLECTION", "docs"),
+		EmbedProvider:     getenv("EMBED_PROVIDER", "openai"),
+		OpenAIAPIKey:      os.Getenv("OPENAI_API_KEY"),
+		OpenAIEmbedModel:  model,
+		EmbedDims:         dims,
+		OllamaURL:         getenv("OLLAMA_URL", "http://localhost:11434"),
+		OllamaModel:       getenv("OLLAMA_MODEL", "nomic-embed-text"),
+		OllamaDims:        ollamaDims(),
+		ProjectsRoot:      getenv("PROJECTS_ROOT", "/projects"),
+		HTTPPort:          getenv("HTTP_PORT", "8080"),
+		MCPName:           getenv("MCP_NAME", "doc-rag-mcp"),
+		MCPVersion:        getenv("MCP_VERSION", "1.0.0"),
+		IndexerStatusFile: os.Getenv("INDEXER_STATUS_FILE"),
+		DockerSocket:      os.Getenv("DOCKER_SOCKET"),
+		ComposeProject:    getenv("COMPOSE_PROJECT_NAME", ""),
+		HistoryFile:       os.Getenv("STATUS_HISTORY_FILE"),
 	}
 }
 

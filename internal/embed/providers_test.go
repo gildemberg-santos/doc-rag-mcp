@@ -159,6 +159,47 @@ func TestOllamaEmbedErrorWhenUnreachable(t *testing.T) {
 	}
 }
 
+func TestOllamaPingSucceedsWhenModelPresent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"models": []map[string]any{{"name": "nomic-embed-text:latest"}}})
+	}))
+	defer srv.Close()
+
+	e := NewOllama(srv.URL, "nomic-embed-text", 768)
+	if err := e.Ping(context.Background()); err != nil {
+		t.Fatalf("esperava ping ok, veio erro: %v", err)
+	}
+}
+
+func TestOllamaPingFailsWhenModelMissing(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"models": []map[string]any{{"name": "qwen3:4b"}}})
+	}))
+	defer srv.Close()
+
+	e := NewOllama(srv.URL, "nomic-embed-text", 768)
+	if err := e.Ping(context.Background()); err == nil {
+		t.Fatal("esperava erro quando o modelo configurado não está na lista")
+	}
+}
+
+func TestOllamaPingDoesNotCallEmbed(t *testing.T) {
+	calledEmbed := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/embed" {
+			calledEmbed = true
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"models": []map[string]any{{"name": "nomic-embed-text"}}})
+	}))
+	defer srv.Close()
+
+	e := NewOllama(srv.URL, "nomic-embed-text", 768)
+	_ = e.Ping(context.Background())
+	if calledEmbed {
+		t.Fatal("Ping não deveria gerar nenhum embedding de verdade")
+	}
+}
+
 // ---------- OpenAI ----------
 
 func TestNewWithDimsDefaults(t *testing.T) {
@@ -272,6 +313,32 @@ func TestOpenAIEmbedErrorOnNon200(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "401") {
 		t.Errorf("mensagem deveria citar o status: %v", err)
+	}
+}
+
+func TestOpenAIPingFailsWithoutAPIKey(t *testing.T) {
+	e := New("", "text-embedding-3-small")
+	if err := e.Ping(context.Background()); err == nil {
+		t.Fatal("esperava erro sem API key")
+	}
+}
+
+func TestOpenAIPingSucceedsWithValidAuth(t *testing.T) {
+	var gotAuth, gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotPath = r.URL.Path
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	e := New("minha-chave", "text-embedding-3-small")
+	e.BaseURL = srv.URL
+	if err := e.Ping(context.Background()); err != nil {
+		t.Fatalf("esperava ping ok, veio erro: %v", err)
+	}
+	if gotAuth != "Bearer minha-chave" || gotPath != "/v1/models" {
+		t.Fatalf("request errado: auth=%q path=%q", gotAuth, gotPath)
 	}
 }
 

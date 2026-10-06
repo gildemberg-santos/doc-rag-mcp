@@ -16,6 +16,13 @@ type Provider interface {
 	Name() string
 }
 
+// Pinger é uma capacidade opcional: checagem de alcançabilidade barata
+// (sem gerar embedding de verdade, sem custo). Nem todo Provider precisa
+// implementar — quem consome faz type assertion.
+type Pinger interface {
+	Ping(ctx context.Context) error
+}
+
 const (
 	ProviderOpenAI = "openai"
 	ProviderOllama = "ollama"

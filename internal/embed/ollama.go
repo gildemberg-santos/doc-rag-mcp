@@ -102,3 +102,34 @@ func (e *OllamaEmbedder) EmbedQuery(ctx context.Context, q string) ([]float32, e
 	}
 	return vecs[0], nil
 }
+
+// Ping confere que o Ollama responde e tem o modelo configurado disponível
+// — sem gerar nenhum embedding, bem mais barato que um Embed de verdade.
+func (e *OllamaEmbedder) Ping(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, "GET", e.BaseURL+"/api/tags", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := e.Client.Do(req)
+	if err != nil {
+		return fmt.Errorf("ollama indisponível em %s: %w", e.BaseURL, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("ollama /api/tags respondeu status=%d", resp.StatusCode)
+	}
+	var out struct {
+		Models []struct {
+			Name string `json:"name"`
+		} `json:"models"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return err
+	}
+	for _, m := range out.Models {
+		if strings.HasPrefix(m.Name, e.Model) {
+			return nil
+		}
+	}
+	return fmt.Errorf("modelo %q não encontrado no ollama (rode: ollama pull %s)", e.Model, e.Model)
+}
