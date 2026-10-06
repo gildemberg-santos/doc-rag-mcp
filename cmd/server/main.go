@@ -98,12 +98,14 @@ func runHTTP(ctx context.Context, addr string, srv *mcp.Server, q *vector.Client
 	mux.Handle("/mcp", mcpHandler)
 	mux.HandleFunc("/health", aux.Health)
 	mux.HandleFunc("/search", aux.Search)
+	mux.HandleFunc("/status", aux.Status)
+	mux.HandleFunc("/dashboard", aux.Dashboard)
 
 	httpSrv := &http.Server{Addr: addr, Handler: mux}
 	go func() {
 		<-ctx.Done()
 		_ = httpSrv.Shutdown(context.Background())
 	}()
-	log.Printf("MCP Streamable HTTP em http://%s/mcp (health /health, debug /search)", addr)
+	log.Printf("MCP Streamable HTTP em http://%s/mcp (health /health, debug /search, status /status, dashboard /dashboard)", addr)
 	return httpSrv.ListenAndServe()
 }
