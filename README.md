@@ -267,3 +267,10 @@ internal/httpapi   → /health + /search debug
 | `STATUS_HISTORY_FILE` | — | JSONL da série temporal (só memória se vazio) |
 | `DOCKER_SOCKET` | — | socket Docker opt-in (omitido se vazio) |
 | `COMPOSE_PROJECT_NAME` | — | filtra containers por projeto (vazio = todos) |
+
+## Roadmap
+
+- [Geração automática de documentação por arquivo](docs/plano-auto-documentacao.md) —
+  planejamento (não implementado) de uma segunda capacidade além da indexação
+  para busca: gerar e manter em sincronia um resumo/documentação por arquivo,
+  servido por novas tools MCP.
