@@ -56,12 +56,28 @@ func (c *Client) do(ctx context.Context, method, path string, payload any, out a
 	return resp.StatusCode, nil
 }
 
-// EnsureCollection cria a coleção se não existir.
+// Tuning do otimizador aplicado a toda coleção criada por este projeto —
+// mais agressivo que o default do Qdrant (deleted_threshold 0.2,
+// vacuum_min_vector_number 1000), pra que vetores deletados (soft-delete
+// da reindexação incremental) sejam aspirados com pouco acúmulo em vez de
+// milhares parados. Validado ao vivo: 2690 → 155 pendentes.
+// (Coleções que já existiam antes disso precisam do PATCH manual único
+// documentado no README — por decisão, EnsureCollection não altera
+// coleção existente pra não desfazer tuning proposital de ninguém.)
+const (
+	OptimizerDeletedThreshold = 0.1
+	OptimizerVacuumMinVectors = 500
+)
+
+// EnsureCollection cria a coleção se não existir — e, nesse caso, já
+// aplica o tuning do otimizador num PATCH separado (o PUT de criação não
+// aceita a config parcial com a mesma tolerância do PATCH, verificado
+// contra o Qdrant real).
 func (c *Client) EnsureCollection(ctx context.Context, vectorSize int) error {
 	var existing map[string]any
 	status, err := c.do(ctx, "GET", "/collections/"+c.Collection, nil, &existing)
 	if err == nil && status == 200 {
-		return nil // já existe
+		return nil // já existe — não toca em tuning alheio
 	}
 	payload := map[string]any{
 		"vectors": map[string]any{
@@ -69,7 +85,15 @@ func (c *Client) EnsureCollection(ctx context.Context, vectorSize int) error {
 			"distance": "Cosine",
 		},
 	}
-	_, err = c.do(ctx, "PUT", "/collections/"+c.Collection, payload, nil)
+	if _, err := c.do(ctx, "PUT", "/collections/"+c.Collection, payload, nil); err != nil {
+		return err
+	}
+	_, err = c.do(ctx, "PATCH", "/collections/"+c.Collection, map[string]any{
+		"optimizers_config": map[string]any{
+			"deleted_threshold":        OptimizerDeletedThreshold,
+			"vacuum_min_vector_number": OptimizerVacuumMinVectors,
+		},
+	}, nil)
 	return err
 }
 

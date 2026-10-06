@@ -210,6 +210,18 @@ Sem o volume compartilhado, a seção do indexer some (não quebra o resto).
 Sem o socket, a seção de containers some. Sem `STATUS_HISTORY_FILE`, o
 histórico vive só em memória (720 samples, perde no restart).
 
+Tuning do otimizador: toda coleção criada pelo indexer já nasce com
+`deleted_threshold: 0.1` e `vacuum_min_vector_number: 500` (mais
+agressivo que o default do Qdrant 0.2/1000 — validado ao vivo: 2.690 →
+155 vetores pendentes). Coleções que já existiam precisam de um PATCH
+único (o `EnsureCollection` não altera coleção existente de propósito):
+
+```bash
+curl -X PATCH localhost:6333/collections/docs-ollama \
+  -H 'Content-Type: application/json' \
+  -d '{"optimizers_config": {"deleted_threshold": 0.1, "vacuum_min_vector_number": 500}}'
+```
+
 ## Testes
 
 ```bash

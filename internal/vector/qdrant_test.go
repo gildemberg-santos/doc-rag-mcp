@@ -48,12 +48,16 @@ func TestNewTrimsTrailingSlash(t *testing.T) {
 
 func TestEnsureCollectionSkipsCreateWhenExists(t *testing.T) {
 	putCalled := false
+	patchCalled := false
 	c, _ := newFakeQdrant(t, func(w http.ResponseWriter, r *http.Request, body map[string]any) {
 		switch r.Method {
 		case http.MethodGet:
 			writeJSON(w, 200, map[string]any{"result": map[string]any{}})
 		case http.MethodPut:
 			putCalled = true
+			writeJSON(w, 200, map[string]any{})
+		case http.MethodPatch:
+			patchCalled = true
 			writeJSON(w, 200, map[string]any{})
 		}
 	})
@@ -62,6 +66,9 @@ func TestEnsureCollectionSkipsCreateWhenExists(t *testing.T) {
 	}
 	if putCalled {
 		t.Fatal("coleção já existe (GET 200) — não deveria ter chamado PUT para recriar")
+	}
+	if patchCalled {
+		t.Fatal("coleção já existe — não deveria alterar tuning alheio com PATCH")
 	}
 }
 
@@ -73,6 +80,8 @@ func TestEnsureCollectionCreatesWhenMissing(t *testing.T) {
 			writeJSON(w, 404, map[string]any{"status": map[string]any{"error": "not found"}})
 		case http.MethodPut:
 			createBody = body
+			writeJSON(w, 200, map[string]any{})
+		case http.MethodPatch:
 			writeJSON(w, 200, map[string]any{})
 		}
 	})
@@ -91,6 +100,50 @@ func TestEnsureCollectionCreatesWhenMissing(t *testing.T) {
 	}
 	if dist, _ := vectors["distance"].(string); dist != "Cosine" {
 		t.Errorf("esperava vectors.distance=Cosine, veio %v", vectors["distance"])
+	}
+}
+
+func TestEnsureCollectionAppliesOptimizerTuningOnCreate(t *testing.T) {
+	var patchBody map[string]any
+	c, _ := newFakeQdrant(t, func(w http.ResponseWriter, r *http.Request, body map[string]any) {
+		switch r.Method {
+		case http.MethodGet:
+			writeJSON(w, 404, map[string]any{"status": map[string]any{"error": "not found"}})
+		case http.MethodPut:
+			writeJSON(w, 200, map[string]any{})
+		case http.MethodPatch:
+			patchBody = body
+			writeJSON(w, 200, map[string]any{})
+		}
+	})
+	if err := c.EnsureCollection(context.Background(), 768); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _ := patchBody["optimizers_config"].(map[string]any)
+	if cfg == nil {
+		t.Fatalf("esperava PATCH com optimizers_config após criar, veio %v", patchBody)
+	}
+	if dt, _ := cfg["deleted_threshold"].(float64); dt != OptimizerDeletedThreshold {
+		t.Errorf("esperava deleted_threshold=%v, veio %v", OptimizerDeletedThreshold, cfg["deleted_threshold"])
+	}
+	if vm, _ := cfg["vacuum_min_vector_number"].(float64); int(vm) != OptimizerVacuumMinVectors {
+		t.Errorf("esperava vacuum_min_vector_number=%v, veio %v", OptimizerVacuumMinVectors, cfg["vacuum_min_vector_number"])
+	}
+}
+
+func TestEnsureCollectionPropagatesTuningError(t *testing.T) {
+	c, _ := newFakeQdrant(t, func(w http.ResponseWriter, r *http.Request, body map[string]any) {
+		switch r.Method {
+		case http.MethodGet:
+			writeJSON(w, 404, map[string]any{"status": map[string]any{"error": "not found"}})
+		case http.MethodPut:
+			writeJSON(w, 200, map[string]any{})
+		case http.MethodPatch:
+			writeJSON(w, 500, map[string]any{"status": "error"})
+		}
+	})
+	if err := c.EnsureCollection(context.Background(), 768); err == nil {
+		t.Fatal("esperava erro quando o PATCH de tuning falha")
 	}
 }
 
