@@ -66,6 +66,53 @@ var allowedBaseNames = map[string]bool{
 	"readme": true, "changelog": true, "agents": true, "claude": true,
 }
 
+// configLikeExts são extensões de arquivo de config/dados (não código-fonte)
+// — é nelas que segredos de verdade costumam aparecer (chave de API, senha
+// de banco). A checagem de nome sensível abaixo só se aplica a essas
+// extensões, pra não excluir código legítimo cujo nome só cita o conceito
+// (ex.: "credential_resolver.rb" não é um segredo, é uma classe de serviço).
+var configLikeExts = map[string]bool{
+	".yml": true, ".yaml": true, ".json": true, ".ini": true,
+	".toml": true, ".xml": true, ".txt": true,
+}
+
+// sensitiveBaseNames são nomes de arquivo de config amplamente conhecidos
+// por guardar segredos reais (chave/senha), independente do conteúdo.
+var sensitiveBaseNames = map[string]bool{
+	"secrets.yml": true, "secrets.yaml": true,
+	"database.yml": true, "database.yaml": true,
+	"newrelic.yml": true, "scout_apm.yml": true, "elastic_apm.yml": true,
+	"honeybadger.yml": true,
+}
+
+// isSensitiveConfig decide se um arquivo de config/dados parece guardar
+// segredos reais e por isso não deve ser indexado — mesmo tendo uma
+// extensão permitida. Arquivos claramente de exemplo/modelo (nome contém
+// "example"/"sample"/"template") ficam de fora dessa checagem, igual ao
+// tratamento já dado a .env.example.
+func isSensitiveConfig(base string) bool {
+	lower := strings.ToLower(base)
+	if strings.Contains(lower, "example") || strings.Contains(lower, "sample") || strings.Contains(lower, "template") {
+		return false
+	}
+	if sensitiveBaseNames[lower] {
+		return true
+	}
+	return strings.Contains(lower, "secret") || strings.Contains(lower, "credential")
+}
+
+// isGeneratedPublicDir reconhece pastas de saída de build (bundles/assets
+// compilados) dentro de public/ — não são código-fonte, só ruído pro RAG
+// (e às vezes nem texto, são bundles minificados enormes). app/assets (que
+// É código-fonte, Sass/JS escrito à mão) não é afetado: só pastas sob
+// "public" entram nessa checagem.
+func isGeneratedPublicDir(parentIsPublic bool, name string) bool {
+	if !parentIsPublic {
+		return false
+	}
+	return name == "assets" || strings.HasPrefix(name, "packs") || strings.HasPrefix(name, "vite")
+}
+
 func languageFor(path string) string {
 	ext := strings.ToLower(filepath.Ext(path))
 	base := strings.ToLower(strings.TrimSuffix(filepath.Base(path), ext))
@@ -83,7 +130,7 @@ func shouldIndex(rel string, info fs.FileInfo) bool {
 		return false
 	}
 	parts := strings.Split(filepath.ToSlash(rel), "/")
-	for _, p := range parts {
+	for i, p := range parts {
 		if skipDirs[p] {
 			return false
 		}
@@ -91,9 +138,19 @@ func shouldIndex(rel string, info fs.FileInfo) bool {
 			// ignora dotfiles exceto .env.example
 			return false
 		}
+		if i > 0 && isGeneratedPublicDir(parts[i-1] == "public", p) {
+			// pasta de build (public/assets, public/packs*, public/vite*)
+			return false
+		}
 	}
 	// ignora lockfiles gigantes e minificados
 	lower := strings.ToLower(filepath.Base(rel))
+	if lower == ".env.example" {
+		// exceção explícita: é um template, não segredo — e não bate em
+		// nenhuma extensão/nome permitido por si só, então precisa sair
+		// daqui antes de cair no allowlist de extensão abaixo.
+		return true
+	}
 	for _, s := range []string{".min.js", ".min.css", "package-lock.json", "yarn.lock", "Gemfile.lock", ".map"} {
 		if strings.HasSuffix(lower, s) {
 			return false
@@ -101,6 +158,9 @@ func shouldIndex(rel string, info fs.FileInfo) bool {
 	}
 	ext := strings.ToLower(filepath.Ext(rel))
 	if allowedExts[ext] {
+		if configLikeExts[ext] && isSensitiveConfig(filepath.Base(rel)) {
+			return false
+		}
 		return true
 	}
 	base := strings.ToLower(strings.TrimSuffix(filepath.Base(rel), ext))
@@ -134,6 +194,18 @@ func collectFiles(projectDir string, maxFileBytes int) ([]fileEntry, error) {
 		}
 		if d.IsDir() {
 			if skipDirs[d.Name()] {
+				return filepath.SkipDir
+			}
+			// pastas-ponto (.git, .github, .vscode, node_modules internos
+			// de ferramentas, etc.) nunca são indexadas (shouldIndex já
+			// filtraria por arquivo, mas nem vale a pena descer e listar).
+			// path != projectDir pra não podar a própria raiz do projeto,
+			// caso o nome da pasta do projeto comece com ".".
+			if path != projectDir && strings.HasPrefix(d.Name(), ".") {
+				return filepath.SkipDir
+			}
+			parent := filepath.Base(filepath.Dir(path))
+			if isGeneratedPublicDir(parent == "public", d.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
