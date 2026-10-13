@@ -14,13 +14,12 @@ services:
     container_name: doc-rag-qdrant
     ports:
       - "6333:6333"
-      - "6334:6334"
-    # API key (opt-in): com QDRANT_API_KEY setado, TODOS os clients precisam
-    # de QDRANT_API_KEY igual (server/indexer/docgen já mandam o header).
-    # ATENÇÃO: ativar tranca o acesso atual sem key — faça com a stack
-    # parada e reinicie tudo junto. Sem key = aberto (rede confiável).
-    #environment:
-    #  - QDRANT_API_KEY=${QDRANT_API_KEY:-}
+    # API key ATIVA: sem ela, todo acesso é 401 (server/indexer/docgen
+    # mandam o header via QDRANT_API_KEY; dashboard pede a key no login).
+    # Rotação: gere nova (openssl rand -hex 32), troque no .env e reinicie
+    # toda a stack junta — key diferente entre server e clients = 401.
+    environment:
+      - QDRANT_API_KEY=${QDRANT_API_KEY:-}
     volumes:
       - qdrant_storage:/qdrant/storage
     restart: unless-stopped
@@ -53,7 +52,10 @@ services:
       start_period: 60s
 
   mcp-server:
-    build: .
+    build:
+      context: .
+      args:
+        VERSION: ${VERSION:-docker}
     container_name: doc-rag-mcp
     ports:
       - "${HTTP_PORT:-8080}:8080"
@@ -63,7 +65,7 @@ services:
       EMBED_PROVIDER: ${EMBED_PROVIDER:-ollama}
       OLLAMA_URL: http://ollama:11434
       OLLAMA_MODEL: ${OLLAMA_MODEL:-nomic-embed-text}
-      # QDRANT_API_KEY: ${QDRANT_API_KEY:-}  # só se ativado no qdrant (ver acima)
+      QDRANT_API_KEY: ${QDRANT_API_KEY:-}
       PROJECTS_ROOT: /projects
       HTTP_PORT: "8080"
       # Nível 2 — heartbeat do indexer --watch (volume compartilhado).
@@ -97,7 +99,10 @@ services:
   # Docs geradas (coleção -filedocs, opt-in — completions têm custo):
   #  docker compose run --rm indexer --all --generate-docs
   indexer:
-    build: .
+    build:
+      context: .
+      args:
+        VERSION: ${VERSION:-docker}
     entrypoint: ["mcp-indexer"]
     environment:
       QDRANT_URL: http://qdrant:6333
@@ -105,7 +110,7 @@ services:
       EMBED_PROVIDER: ${EMBED_PROVIDER:-ollama}
       OLLAMA_URL: http://ollama:11434
       OLLAMA_MODEL: ${OLLAMA_MODEL:-nomic-embed-text}
-      # QDRANT_API_KEY: ${QDRANT_API_KEY:-}  # só se ativado no qdrant (ver acima)
+      QDRANT_API_KEY: ${QDRANT_API_KEY:-}
       DOCGEN_PROVIDER: ${DOCGEN_PROVIDER:-}
       DOCGEN_MODEL: ${DOCGEN_MODEL:-}
       DOCGEN_ENABLED: ${DOCGEN_ENABLED:-}
@@ -131,7 +136,10 @@ services:
   #  docker compose run --rm docgen --all
   #  docker compose run --rm docgen --project neurolead --out ./docs-geradas --store=false
   docgen:
-    build: .
+    build:
+      context: .
+      args:
+        VERSION: ${VERSION:-docker}
     entrypoint: ["mcp-docgen"]
     environment:
       QDRANT_URL: http://qdrant:6333
@@ -139,7 +147,7 @@ services:
       EMBED_PROVIDER: ${EMBED_PROVIDER:-ollama}
       OLLAMA_URL: http://ollama:11434
       OLLAMA_MODEL: ${OLLAMA_MODEL:-nomic-embed-text}
-      # QDRANT_API_KEY: ${QDRANT_API_KEY:-}  # só se ativado no qdrant (ver acima)
+      QDRANT_API_KEY: ${QDRANT_API_KEY:-}
       DOCGEN_PROVIDER: ${DOCGEN_PROVIDER:-}
       DOCGEN_MODEL: ${DOCGEN_MODEL:-}
       PROJECTS_ROOT: /projects
@@ -163,7 +171,10 @@ services:
   # de filedocs roda no 1º ciclo e depois a cada DOCGEN_INTERVAL (default
   # 24h), só para DOCGEN_PROJECTS (csv, vazio = todos).
   indexer-watch:
-    build: .
+    build:
+      context: .
+      args:
+        VERSION: ${VERSION:-docker}
     entrypoint: ["mcp-indexer"]
     environment:
       QDRANT_URL: http://qdrant:6333
@@ -171,7 +182,7 @@ services:
       EMBED_PROVIDER: ${EMBED_PROVIDER:-ollama}
       OLLAMA_URL: http://ollama:11434
       OLLAMA_MODEL: ${OLLAMA_MODEL:-nomic-embed-text}
-      # QDRANT_API_KEY: ${QDRANT_API_KEY:-}  # só se ativado no qdrant (ver acima)
+      QDRANT_API_KEY: ${QDRANT_API_KEY:-}
       DOCGEN_PROVIDER: ${DOCGEN_PROVIDER:-}
       DOCGEN_MODEL: ${DOCGEN_MODEL:-}
       DOCGEN_ENABLED: ${DOCGEN_ENABLED:-}

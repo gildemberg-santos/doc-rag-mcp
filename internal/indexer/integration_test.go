@@ -82,10 +82,16 @@ func newIntegrationQdrant(t *testing.T) *vector.Client {
 	}
 	collection := "indexer_integration_" + sanitize(t.Name())
 	c := vector.New(url, collection)
+	if key := os.Getenv("QDRANT_API_KEY"); key != "" {
+		c = c.WithAPIKey(key)
+	}
 	t.Cleanup(func() {
 		req, err := http.NewRequest(http.MethodDelete, c.BaseURL+"/collections/"+c.Collection, nil)
 		if err != nil {
 			return
+		}
+		if c.APIKey != "" {
+			req.Header.Set("api-key", c.APIKey)
 		}
 		resp, err := c.HTTP.Do(req)
 		if err == nil {

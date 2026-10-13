@@ -272,10 +272,11 @@ curl -X PATCH localhost:6333/collections/docs \
   `/status`, `/dashboard` (`/health` fica aberto p/ liveness). Sem token,
   o server avisa no boot e serve aberto — ok em localhost, não exponha
   `8080`/`6333` sem token.
-- **API key do Qdrant (opt-in):** com `QDRANT_API_KEY` no serviço `qdrant`
-  (descomente no compose), todos os clients precisam da mesma key
-  (`QDRANT_API_KEY` nos demais serviços — já mandam o header). Ative com
-  a stack parada e suba tudo junto, senão você mesmo se tranca pra fora.
+- **API key do Qdrant ATIVA:** o serviço `qdrant` exige `QDRANT_API_KEY`
+  (todos os binários mandam o header; dashboard pede a key no login).
+  Rotação: `openssl rand -hex 32` no `.env` + restart de toda a stack
+  junta (key divergente = 401 em tudo). Debug direto:
+  `curl -H "api-key: $QDRANT_API_KEY" localhost:6333/collections`.
 - **Backup:** `make backup` gera `backups/qdrant-storage-<data>.tgz`
   (volume do Qdrant). Automatize via cron se o índice for crítico
   (reindex cheio leva ~10min; filedocs de projetos grandes, bem mais).

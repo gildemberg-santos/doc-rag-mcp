@@ -1,6 +1,7 @@
 .PHONY: tidy build test test-integration run-http run-stdio index index-all docker-up docker-index docker-logs qdrant-ui ollama-pull ollama-seed docker-watch verify backup eval
 
 VERSION := $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
+export VERSION
 LDFLAGS := -X doc-rag-mcp/internal/config.buildVersion=$(VERSION)
 
 tidy:
