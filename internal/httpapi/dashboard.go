@@ -136,6 +136,11 @@ const dashboardHTML = `<!doctype html>
   </section>
 
   <section>
+    <div class="section-head"><h2>Documentação gerada</h2><span class="hint">coleção -filedocs · 1 ponto por arquivo</span></div>
+    <div class="panel"><div id="filedocs"><span class="muted">carregando…</span></div></div>
+  </section>
+
+  <section>
     <div class="section-head"><h2>Indexer Watch</h2><span class="hint">heartbeat via arquivo compartilhado</span></div>
     <div class="panel"><div id="indexer"><span class="muted">carregando…</span></div></div>
   </section>
@@ -322,6 +327,27 @@ const dashboardHTML = `<!doctype html>
       else emEl.innerHTML = '<span class="crit-t"><b>FALHA</b></span> — <span class="mono">' + esc(e.error || 'ping falhou') + '</span>';
     } else {
       emEl.innerHTML = '<span class="muted">sem dados.</span>';
+    }
+
+    // ---- docs geradas ----
+    var fdEl = document.getElementById('filedocs');
+    if(data.filedocs){
+      var f = data.filedocs;
+      var rows = [['Coleção', '<span class="mono">' + esc(f.collection) + '</span>'],
+        ['Arquivos com doc', '<span class="num">' + fmt(f.points) + '</span>']];
+      var bp = f.by_project || {};
+      var names = Object.keys(bp).sort();
+      if(names.length){
+        var ph = '<table style="margin-top:12px"><thead><tr><th>Projeto</th><th>Docs</th></tr></thead><tbody>';
+        names.forEach(function(n){
+          ph += '<tr><td>' + esc(n) + '</td><td class="num">' + fmt(bp[n]) + '</td></tr>';
+        });
+        fdEl.innerHTML = kvTable(rows) + ph + '</tbody></table>';
+      } else {
+        fdEl.innerHTML = kvTable(rows);
+      }
+    } else {
+      fdEl.innerHTML = '<span class="muted">sem docs geradas — rode o docgen ou o indexer com --generate-docs.</span>';
     }
 
     // ---- indexer ----

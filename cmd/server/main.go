@@ -13,6 +13,7 @@ import (
 	"doc-rag-mcp/internal/config"
 	"doc-rag-mcp/internal/dockerstat"
 	"doc-rag-mcp/internal/embed"
+	"doc-rag-mcp/internal/filedocs"
 	"doc-rag-mcp/internal/history"
 	"doc-rag-mcp/internal/httpapi"
 	"doc-rag-mcp/internal/mcpserver"
@@ -27,7 +28,7 @@ func main() {
 
 	transport := flag.String("transport", "http", "transporte MCP: stdio | http | both")
 	httpAddr := flag.String("http-addr", "", "endereço HTTP (default :$HTTP_PORT)")
-	providerFlag := flag.String("provider", "", "openai|ollama (default: $EMBED_PROVIDER ou openai)")
+	providerFlag := flag.String("provider", "", "provider de embedding: só ollama (default: $EMBED_PROVIDER ou ollama)")
 	flag.Parse()
 
 	cfg := config.Load()
@@ -39,21 +40,18 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	collection := embed.CollectionFor(provider, cfg.Collection)
+	collection := cfg.Collection
 
-	var e embed.Provider
-	if provider == embed.ProviderOllama {
-		e = embed.NewOllama(cfg.OllamaURL, cfg.OllamaModel, cfg.OllamaDims)
-	} else {
-		if cfg.OpenAIAPIKey == "" {
-			log.Fatal("OPENAI_API_KEY não configurada (veja .env.example) — ou use --provider ollama / EMBED_PROVIDER=ollama")
-		}
-		e = embed.NewWithDims(cfg.OpenAIAPIKey, cfg.OpenAIEmbedModel, cfg.EmbedDims)
-	}
+	e := embed.NewOllama(cfg.OllamaURL, cfg.OllamaModel, cfg.OllamaDims)
 	q := vector.New(cfg.QdrantURL, collection)
-	log.Printf("[%s] provider=%s coleção=%q dims=%d", cfg.MCPName, provider, collection, e.Dims())
+	log.Printf("[%s] provider=%s (%s) coleção=%q dims=%d", cfg.MCPName, provider, cfg.OllamaModel, collection, e.Dims())
 
-	srv := mcpserver.New(cfg.MCPName, cfg.MCPVersion, &mcpserver.Deps{Qdrant: q, Embedder: e, Provider: provider, Dims: e.Dims()})
+	// Coleção de documentação gerada (best-effort): se o Qdrant estiver
+	// vazio de filedocs, as tools get_file_doc/search_file_docs avisam em
+	// vez de quebrar — o resto do MCP funciona normalmente.
+	fileDocs := q.WithCollection(filedocs.CollectionFor(collection))
+
+	srv := mcpserver.New(cfg.MCPName, cfg.MCPVersion, &mcpserver.Deps{Qdrant: q, Embedder: e, Provider: provider, Dims: e.Dims(), FileDocs: fileDocs})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -65,11 +63,11 @@ func main() {
 			log.Fatalf("stdio: %v", err)
 		}
 	case "http":
-		runHTTP(ctx, *httpAddr, srv, q, e, cfg)
+		runHTTP(ctx, *httpAddr, srv, q, fileDocs, e, cfg)
 	case "both":
 		// HTTP em background + stdio em foreground (para Claude Code + remoto ao mesmo tempo)
 		go func() {
-			if err := runHTTP(context.Background(), *httpAddr, srv, q, e, cfg); err != nil {
+			if err := runHTTP(context.Background(), *httpAddr, srv, q, fileDocs, e, cfg); err != nil {
 				log.Printf("http: %v", err)
 			}
 		}()
@@ -90,11 +88,14 @@ func firstNonEmpty(a, b string) string {
 	return b
 }
 
-func runHTTP(ctx context.Context, addr string, srv *mcp.Server, q *vector.Client, e embed.Provider, cfg config.Config) error {
+func runHTTP(ctx context.Context, addr string, srv *mcp.Server, q *vector.Client, fileDocs *vector.Client, e embed.Provider, cfg config.Config) error {
 	mcpHandler := mcp.NewStreamableHTTPHandler(func(_ *http.Request) *mcp.Server {
 		return srv
 	}, nil)
 	aux := httpapi.New(q, e)
+	aux.FileDocs = fileDocs
+	aux.ServerName = cfg.MCPName
+	aux.ServerVersion = cfg.MCPVersion
 	aux.IndexerStatusFile = cfg.IndexerStatusFile
 	aux.History = history.New(cfg.HistoryFile)
 	if cfg.DockerSocket != "" {

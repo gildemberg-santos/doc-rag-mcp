@@ -21,6 +21,18 @@ type Chunk struct {
 	// Hash é o fingerprint do conteúdo (sha256 de Content), usado para
 	// detectar chunks inalterados entre reindexações incrementais.
 	Hash string
+	// BodyHash é o fingerprint só do corpo (escopo+texto, sem o header com
+	// projeto/path) — identidade do conteúdo independente de onde o arquivo
+	// mora. Permite detectar rename/move e conteúdo deslocado/duplicado sem
+	// reembedar: o vetor do ponto antigo é copiado para o novo ID. Pontos
+	// indexados antes deste campo existir simplesmente não participam
+	// (fallback: reembeda como antes).
+	BodyHash string
+	// FileHash é o fingerprint do arquivo inteiro (sha256 da concatenação
+	// ordenada dos BodyHash), mesma granularidade do `source_hash` do plano
+	// de docgen — serve ao fast-path de rename (arquivo novo cujo file_hash
+	// bate com um path desaparecido = move, não conteúdo novo).
+	FileHash string
 	// ModTime é o mtime do arquivo de origem no momento do scan.
 	ModTime time.Time
 	// Size é o tamanho em bytes do arquivo de origem.
@@ -113,7 +125,7 @@ func isGeneratedPublicDir(parentIsPublic bool, name string) bool {
 	return name == "assets" || strings.HasPrefix(name, "packs") || strings.HasPrefix(name, "vite")
 }
 
-func languageFor(path string) string {
+func LanguageFor(path string) string {
 	ext := strings.ToLower(filepath.Ext(path))
 	base := strings.ToLower(strings.TrimSuffix(filepath.Base(path), ext))
 	if allowedBaseNames[base] {
@@ -172,6 +184,35 @@ func shouldIndex(rel string, info fs.FileInfo) bool {
 		return true
 	}
 	return false
+}
+
+// FileRef é um arquivo indexável (só metadados, sem conteúdo) — mesma
+// regra de shouldIndex do scan (exclui segredos, lockfiles, binários),
+// reaproveitada por quem precisa listar arquivos sem chunkar (ex.: docgen).
+type FileRef struct {
+	Rel     string
+	Abs     string
+	Size    int64
+	ModTime time.Time
+}
+
+// ListFiles varre o projeto e devolve os arquivos indexáveis ordenados por
+// mtime decrescente (mais recentes primeiro), sem ler conteúdo.
+func ListFiles(projectDir string, maxFileBytes int) ([]FileRef, error) {
+	entries, err := collectFiles(projectDir, maxFileBytes)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]FileRef, len(entries))
+	for i, e := range entries {
+		out[i] = FileRef{Rel: e.rel, Abs: e.abs, Size: e.size, ModTime: e.modTime}
+	}
+	return out, nil
+}
+
+// IsText diz se o conteúdo parece texto indexável (mesma regra do scan).
+func IsText(s string) bool {
+	return isMostlyText(s)
 }
 
 // fileEntry é o resultado leve (sem conteúdo) da passada de coleta.
@@ -281,7 +322,7 @@ func ScanProject(projectName, projectDir string, opt *Options, shouldSkip func(r
 		// header com contexto do arquivo ajuda o retrieval.
 		// Arquivos com regra estrutural (rb/js/ts/md) saem em blocos por
 		// método/classe/heading com escopo; demais usam janela com overlap.
-		lang := languageFor(f.rel)
+		lang := LanguageFor(f.rel)
 		header := fmt.Sprintf("Projeto: %s | Arquivo: %s | Linguagem: %s\n---\n", projectName, f.rel, lang)
 		type piece struct {
 			scope string
@@ -297,6 +338,22 @@ func ScanProject(projectName, projectDir string, opt *Options, shouldSkip func(r
 				pieces = append(pieces, piece{body: p})
 			}
 		}
+		// FileHash antes de emitir: precisa de todos os BodyHash do arquivo
+		// (pieces já estão completos aqui; onChunk consome sem volta).
+		// bodyHash exclui o header (projeto/path/linguagem) de propósito:
+		// é a identidade do conteúdo, estável entre renames. O escopo
+		// entra porque é derivado do conteúdo (blocos/métodos), não do path.
+		bodyHex := make([]string, len(pieces))
+		for i, pc := range pieces {
+			bh := sha256.Sum256([]byte(pc.scope + "\x00" + pc.body))
+			bodyHex[i] = fmt.Sprintf("%x", bh[:])
+		}
+		fh := sha256.New()
+		for _, s := range bodyHex {
+			fh.Write([]byte(s))
+			fh.Write([]byte{0})
+		}
+		fileHash := fmt.Sprintf("%x", fh.Sum(nil))
 		for i, pc := range pieces {
 			full := header
 			if pc.scope != "" {
@@ -311,6 +368,8 @@ func ScanProject(projectName, projectDir string, opt *Options, shouldSkip func(r
 				ChunkIndex: i,
 				Content:    full,
 				Hash:       fmt.Sprintf("%x", h[:]),
+				BodyHash:   bodyHex[i],
+				FileHash:   fileHash,
 				ModTime:    f.modTime,
 				Size:       f.size,
 				ChunkCount: len(pieces),

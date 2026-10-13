@@ -298,3 +298,182 @@ func TestHandleIndexStatusErrorWhenQdrantDown(t *testing.T) {
 		t.Fatalf("esperava erro de qdrant inacessível, veio: %+v", res)
 	}
 }
+
+func TestHandleIndexStatusIncludesServerVersion(t *testing.T) {
+	q := newFakeQdrant(t, func(method, path string, body map[string]any) (int, any) {
+		return 200, map[string]any{"result": map[string]any{"count": 10}}
+	})
+	d := &Deps{Qdrant: q, Provider: "ollama", Dims: 768, Name: "doc-rag-mcp", Version: "1.2.3"}
+	res, _, err := handleIndexStatus(context.Background(), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text := resultText(t, res); !strings.Contains(text, "doc-rag-mcp v1.2.3") {
+		t.Fatalf("index_status deveria expor nome+versão (detecção de schema desatualizado): %q", text)
+	}
+}
+
+func TestHandleIndexStatusOmitsFileDocsWhenUnconfigured(t *testing.T) {
+	q := newFakeQdrant(t, func(method, path string, body map[string]any) (int, any) {
+		return 200, map[string]any{"result": map[string]any{"count": 10}}
+	})
+	d := &Deps{Qdrant: q, Provider: "ollama", Dims: 768}
+	if text := resultText(t, mustIndexStatus(t, d)); strings.Contains(text, "Docs geradas") {
+		t.Fatalf("sem FileDocs, seção de docs deveria ser omitida: %q", text)
+	}
+}
+
+func mustIndexStatus(t *testing.T, d *Deps) *mcp.CallToolResult {
+	t.Helper()
+	res, _, err := handleIndexStatus(context.Background(), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return res
+}
+
+func TestHandleIndexStatusReportsFileDocsCoverage(t *testing.T) {
+	q := newFakeQdrant(t, func(method, path string, body map[string]any) (int, any) {
+		return 200, map[string]any{"result": map[string]any{"count": 100}}
+	})
+	fd := newFakeQdrant(t, func(method, path string, body map[string]any) (int, any) {
+		if strings.HasSuffix(path, "/points/scroll") {
+			return 200, map[string]any{"result": map[string]any{"points": []any{
+				map[string]any{"id": "1", "payload": map[string]any{"project": "proj", "path": "a.go"}},
+				map[string]any{"id": "2", "payload": map[string]any{"project": "proj", "path": "b.go"}},
+			}}}
+		}
+		return 200, map[string]any{"result": map[string]any{"count": 2}}
+	})
+	d := &Deps{Qdrant: q, Provider: "ollama", Dims: 768, FileDocs: fd}
+	text := resultText(t, mustIndexStatus(t, d))
+	if !strings.Contains(text, "Docs geradas: 2 arquivos") || !strings.Contains(text, "proj: 2") {
+		t.Fatalf("cobertura de filedocs errada: %q", text)
+	}
+}
+
+// ---------- get_file_doc ----------
+
+func TestHandleGetFileDocRequiresProjectAndPath(t *testing.T) {
+	d := &Deps{}
+	res, _, _ := handleGetFileDoc(context.Background(), d, GetFileDocArgs{})
+	if !res.IsError {
+		t.Fatalf("esperava erro sem project/path: %+v", res)
+	}
+}
+
+func TestHandleGetFileDocWithoutFileDocs(t *testing.T) {
+	d := &Deps{}
+	res, _, _ := handleGetFileDoc(context.Background(), d, GetFileDocArgs{Project: "p", Path: "a.go"})
+	if !strings.Contains(resultText(t, res), "ainda não disponível") {
+		t.Fatalf("sem FileDocs deveria avisar, veio: %+v", res)
+	}
+}
+
+func TestHandleGetFileDocNotGeneratedYet(t *testing.T) {
+	fd := newFakeQdrant(t, func(method, path string, body map[string]any) (int, any) {
+		return 200, map[string]any{"result": map[string]any{"points": []any{}}}
+	})
+	d := &Deps{FileDocs: fd}
+	res, _, _ := handleGetFileDoc(context.Background(), d, GetFileDocArgs{Project: "proj", Path: "a.go"})
+	if !strings.Contains(resultText(t, res), "ainda não tem documentação gerada") {
+		t.Fatalf("mensagem de não-gerada errada: %q", resultText(t, res))
+	}
+}
+
+func TestHandleGetFileDocReturnsDocWithLLMWarning(t *testing.T) {
+	fd := newFakeQdrant(t, func(method, path string, body map[string]any) (int, any) {
+		return 200, map[string]any{"result": map[string]any{"points": []any{
+			map[string]any{"id": "x", "payload": map[string]any{
+				"project": "proj", "path": "a.go", "language": "go",
+				"doc_content": "## Propósito\nFaz X.", "model": "m", "generated_at": "2026-01-01T00:00:00Z",
+			}},
+		}}}
+	})
+	d := &Deps{FileDocs: fd}
+	res, _, err := handleGetFileDoc(context.Background(), d, GetFileDocArgs{Project: "proj", Path: "a.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := resultText(t, res)
+	if !strings.Contains(text, "Faz X.") || !strings.Contains(text, "gerado por LLM") {
+		t.Fatalf("doc deveria vir com aviso de LLM: %q", text)
+	}
+}
+
+// ---------- search_file_docs ----------
+
+func TestHandleSearchFileDocsRequiresQuery(t *testing.T) {
+	d := &Deps{FileDocs: newFakeQdrant(t, func(m, p string, b map[string]any) (int, any) { return 200, map[string]any{} })}
+	res, _, _ := handleSearchFileDocs(context.Background(), d, SearchFileDocsArgs{Query: "  "})
+	if !res.IsError {
+		t.Fatalf("esperava erro sem query: %+v", res)
+	}
+}
+
+func TestHandleSearchFileDocsWithoutFileDocs(t *testing.T) {
+	d := &Deps{}
+	res, _, _ := handleSearchFileDocs(context.Background(), d, SearchFileDocsArgs{Query: "algo"})
+	if !strings.Contains(resultText(t, res), "ainda não disponível") {
+		t.Fatalf("sem FileDocs deveria avisar, veio: %+v", res)
+	}
+}
+
+func TestHandleSearchFileDocsFormatsHits(t *testing.T) {
+	fd := newFakeQdrant(t, func(method, path string, body map[string]any) (int, any) {
+		return 200, scoredPointsResult([]map[string]any{
+			{"id": "1", "score": 0.9, "payload": map[string]any{
+				"project": "proj", "path": "a.go", "language": "go",
+				"doc_content": "Documentação sobre autenticação.", "model": "m",
+			}},
+		})
+	})
+	d := &Deps{FileDocs: fd, Embedder: &fakeEmbed{vec: []float32{0.1}}}
+	res, _, err := handleSearchFileDocs(context.Background(), d, SearchFileDocsArgs{Query: "autenticação"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := resultText(t, res)
+	if !strings.Contains(text, "Encontrados 1 arquivos") || !strings.Contains(text, "[proj] a.go") {
+		t.Fatalf("formatação errada: %q", text)
+	}
+}
+
+func TestHandleSearchFileDocsNoHits(t *testing.T) {
+	fd := newFakeQdrant(t, func(method, path string, body map[string]any) (int, any) {
+		return 200, scoredPointsResult(nil)
+	})
+	d := &Deps{FileDocs: fd, Embedder: &fakeEmbed{vec: []float32{0.1}}}
+	res, _, _ := handleSearchFileDocs(context.Background(), d, SearchFileDocsArgs{Query: "zzz"})
+	if !strings.Contains(resultText(t, res), "Nenhuma documentação gerada encontrada") {
+		t.Fatalf("mensagem de zero hits errada: %q", resultText(t, res))
+	}
+}
+
+// ---------- list_docs has_doc ----------
+
+func TestHandleListDocsMarksHasDoc(t *testing.T) {
+	q := newFakeQdrant(t, func(method, path string, body map[string]any) (int, any) {
+		return 200, map[string]any{"result": map[string]any{"points": []any{
+			map[string]any{"id": "1", "payload": map[string]any{"path": "a.go", "language": "go"}},
+			map[string]any{"id": "2", "payload": map[string]any{"path": "b.go", "language": "go"}},
+		}}}
+	})
+	fd := newFakeQdrant(t, func(method, path string, body map[string]any) (int, any) {
+		return 200, map[string]any{"result": map[string]any{"points": []any{
+			map[string]any{"id": "x", "payload": map[string]any{"path": "a.go"}},
+		}}}
+	})
+	d := &Deps{Qdrant: q, FileDocs: fd}
+	res, _, err := handleListDocs(context.Background(), d, ListDocsArgs{Project: "proj"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := resultText(t, res)
+	if !strings.Contains(text, "- a.go [go] · doc gerada") {
+		t.Fatalf("a.go deveria ter marca de doc gerada: %q", text)
+	}
+	if strings.Contains(text, "b.go [go] · doc gerada") {
+		t.Fatalf("b.go não tem doc — não deveria ter marca: %q", text)
+	}
+}

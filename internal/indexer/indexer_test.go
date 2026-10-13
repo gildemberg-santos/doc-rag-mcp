@@ -1,9 +1,12 @@
 package indexer
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"sort"
+	"sync/atomic"
 	"testing"
 )
 
@@ -115,5 +118,51 @@ func TestProjectDirFallsBackWhenCandidateIsFile(t *testing.T) {
 	got := ProjectDir(root, "arquivo-nao-pasta")
 	if got != root {
 		t.Fatalf("candidato que é arquivo (não pasta) deveria cair no fallback do root, veio %q", got)
+	}
+}
+
+func TestWithRetrySucceedsAfterTransientFailures(t *testing.T) {
+	var calls atomic.Int64
+	err := withRetry(context.Background(), "teste", func() error {
+		if calls.Add(1) < 3 {
+			return errors.New("falha transitória")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("deveria ter sucesso na 3ª tentativa, veio erro: %v", err)
+	}
+	if calls.Load() != 3 {
+		t.Fatalf("esperava 3 tentativas, foram %d", calls.Load())
+	}
+}
+
+func TestWithRetryGivesUpAfterMaxAttempts(t *testing.T) {
+	var calls atomic.Int64
+	err := withRetry(context.Background(), "teste", func() error {
+		calls.Add(1)
+		return errors.New("falha persistente")
+	})
+	if err == nil {
+		t.Fatal("deveria propagar o erro após esgotar as tentativas")
+	}
+	if calls.Load() != maxEmbedAttempts {
+		t.Fatalf("esperava %d tentativas, foram %d", maxEmbedAttempts, calls.Load())
+	}
+}
+
+func TestWithRetryRespectsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var calls atomic.Int64
+	err := withRetry(ctx, "teste", func() error {
+		calls.Add(1)
+		return errors.New("sempre falha")
+	})
+	if err == nil {
+		t.Fatal("com contexto cancelado deveria retornar erro")
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("com contexto cancelado não deveria retentar (1 tentativa), foram %d", calls.Load())
 	}
 }

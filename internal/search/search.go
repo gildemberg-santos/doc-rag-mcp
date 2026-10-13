@@ -183,7 +183,7 @@ func applyDiversify(results []Result, maxPerFile int) []Result {
 }
 
 // strength calibra o cosseno bruto em bandas legíveis.
-// Heurística empírica em embeddings de código (OpenAI small):
+// Heurística empírica em embeddings de código (nomic-embed-text):
 // bons matches caem em 0.45–0.60; abaixo de 0.35 quase sempre é ruído.
 func strength(s float64) string {
 	switch {

@@ -181,7 +181,7 @@ func TestDashboardServesHTML(t *testing.T) {
 		t.Fatalf("esperava Content-Type text/html, veio %q", ct)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"/status", "/status/history", "indexer", "containers", "Coleções órfãs"} {
+	for _, want := range []string{"/status", "/status/history", "indexer", "containers", "Coleções órfãs", "Documentação gerada", "filedocs"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("dashboard deveria mencionar %q (N1+N2+N3): não encontrado", want)
 		}
@@ -429,6 +429,47 @@ func TestHistoryPersistsToFile(t *testing.T) {
 	}
 	if got := h.History.Last(10); len(got) != 1 || got[0].Points != 42 {
 		t.Fatalf("Last() deveria devolver o sample do arquivo: %+v", got)
+	}
+}
+
+// Docs geradas: seção filedocs aparece com contagem por projeto, e some
+// sem FileDocs configurado.
+func TestStatusFileDocsSection(t *testing.T) {
+	mkQ := func() *vector.Client {
+		return newRichFakeQdrant(t, richInfo("green", "ok", 1, 1, 1, 1), richList("testcol"), 1, []map[string]any{})
+	}
+	fd := newFakeQdrant(t, func(method, path string, body map[string]any) (int, any) {
+		return 200, map[string]any{"result": map[string]any{"points": []any{
+			map[string]any{"id": "1", "payload": map[string]any{"project": "a"}},
+			map[string]any{"id": "2", "payload": map[string]any{"project": "b"}},
+			map[string]any{"id": "3", "payload": map[string]any{"project": "b"}},
+		}}}
+	})
+	h := New(mkQ(), &fakeEmbed{vec: []float32{0.1}})
+	h.FileDocs = fd
+	h.ServerName = "doc-rag-mcp"
+	h.ServerVersion = "9.9.9"
+	rec := httptest.NewRecorder()
+	h.Status(rec, httptest.NewRequest(http.MethodGet, "/status", nil))
+	var resp StatusResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp.FileDocs == nil || resp.FileDocs.Points != 3 {
+		t.Fatalf("esperava filedocs com 3 pontos: %+v", resp.FileDocs)
+	}
+	if resp.FileDocs.ByProject["b"] != 2 || resp.FileDocs.ByProject["a"] != 1 {
+		t.Fatalf("contagem por projeto errada: %+v", resp.FileDocs.ByProject)
+	}
+	if resp.ServerVersion != "9.9.9" {
+		t.Fatalf("versão do servidor deveria aparecer no /status: %+v", resp)
+	}
+
+	h2 := New(mkQ(), &fakeEmbed{vec: []float32{0.1}})
+	rec2 := httptest.NewRecorder()
+	h2.Status(rec2, httptest.NewRequest(http.MethodGet, "/status", nil))
+	var resp2 StatusResponse
+	_ = json.Unmarshal(rec2.Body.Bytes(), &resp2)
+	if resp2.FileDocs != nil {
+		t.Fatalf("sem FileDocs, seção deveria ser omitida: %+v", resp2.FileDocs)
 	}
 }
 

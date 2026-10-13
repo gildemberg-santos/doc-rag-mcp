@@ -47,7 +47,7 @@ func (e *OllamaEmbedder) Name() string { return ProviderOllama }
 func (e *OllamaEmbedder) Dims() int    { return e.dims }
 
 func (e *OllamaEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
-	const batchSize = 32 // CPU local: lotes menores que na OpenAI
+	const batchSize = 32 // CPU local: lotes conservadores pra não estourar memória
 	var all [][]float32
 	for i := 0; i < len(texts); i += batchSize {
 		end := i + batchSize

@@ -97,6 +97,40 @@ func (c *Client) EnsureCollection(ctx context.Context, vectorSize int) error {
 	return err
 }
 
+// DeleteCollection apaga a coleção inteira (usado só na migração de
+// dims/modelo com --clean: vetores com dims diferentes são incompatíveis e
+// DeleteByProject não resolve, porque o tamanho do vetor é fixo na criação).
+func (c *Client) DeleteCollection(ctx context.Context) error {
+	_, err := c.do(ctx, "DELETE", "/collections/"+c.Collection, nil, nil)
+	return err
+}
+
+// EnsurePayloadIndex cria o índice payload `project` (keyword) se ainda não
+// existir — sem ele, todo Scroll com filtro por projeto vira full-scan no
+// Qdrant, o que dói a cada ciclo incremental em coleções grandes (~38k
+// pontos no atendimento). Best-effort: erro aqui só gera aviso no chamador,
+// nunca falha a indexação (o filtro continua funcionando, só mais lento).
+func (c *Client) EnsurePayloadIndex(ctx context.Context) error {
+	return c.EnsureKeywordIndex(ctx, "project")
+}
+
+// EnsureKeywordIndex cria um índice payload keyword sobre o campo indicado
+// (ex.: "project", "path"). Best-effort — nunca deve falhar o chamador.
+func (c *Client) EnsureKeywordIndex(ctx context.Context, field string) error {
+	_, err := c.do(ctx, "PUT", "/collections/"+c.Collection+"/index", map[string]any{
+		"field_name":   field,
+		"field_schema": "keyword",
+	}, nil)
+	return err
+}
+
+// WithCollection deriva um cliente para outra coleção no mesmo Qdrant
+// (ex.: a coleção "-filedocs" de documentação gerada) — reaproveita
+// BaseURL e o HTTP client já configurado.
+func (c *Client) WithCollection(collection string) *Client {
+	return &Client{BaseURL: c.BaseURL, Collection: collection, HTTP: c.HTTP}
+}
+
 // Point representa um chunk indexado.
 type Point struct {
 	ID      string         `json:"id"`
@@ -190,6 +224,69 @@ func (c *Client) DeletePoints(ctx context.Context, ids []string) error {
 		}
 	}
 	return nil
+}
+
+// RetrievedPoint é um ponto buscado por ID com seu vetor (sem score).
+type RetrievedPoint struct {
+	ID     string
+	Vector []float32
+}
+
+// RetrieveVectors busca vetores por ID explícito, em lotes — usado pelo
+// reuso por conteúdo (rename/move, conteúdo deslocado/duplicado): copiar o
+// vetor já indexado sai de graça, reembedar custa tempo/dinheiro. Payload
+// não é trazido (o chamador reconstrói o payload fresco com metadados
+// atuais); IDs inexistentes são simplesmente omitidos da resposta.
+func (c *Client) RetrieveVectors(ctx context.Context, ids []string) ([]RetrievedPoint, error) {
+	var all []RetrievedPoint
+	const batch = 500
+	for i := 0; i < len(ids); i += batch {
+		end := i + batch
+		if end > len(ids) {
+			end = len(ids)
+		}
+		filter := map[string]any{
+			"must": []any{
+				map[string]any{"has_id": ids[i:end]},
+			},
+		}
+		var offset any
+		for {
+			payload := map[string]any{
+				"limit":        len(ids[i:end]),
+				"with_payload": false,
+				"with_vector":  true,
+				"filter":       filter,
+			}
+			if offset != nil {
+				payload["offset"] = offset
+			}
+			var out struct {
+				Result struct {
+					Points []struct {
+						ID     any       `json:"id"`
+						Vector []float32 `json:"vector"`
+					} `json:"points"`
+					Next any `json:"next_page_offset"`
+				} `json:"result"`
+			}
+			if _, err := c.do(ctx, "POST", "/collections/"+c.Collection+"/points/scroll", payload, &out); err != nil {
+				return nil, err
+			}
+			for _, p := range out.Result.Points {
+				id, _ := p.ID.(string)
+				if id == "" || len(p.Vector) == 0 {
+					continue
+				}
+				all = append(all, RetrievedPoint{ID: id, Vector: p.Vector})
+			}
+			if out.Result.Next == nil {
+				break
+			}
+			offset = out.Result.Next
+		}
+	}
+	return all, nil
 }
 
 // Scroll lista pontos com paginação (usado por list_projects / get_document).

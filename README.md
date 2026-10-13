@@ -1,24 +1,24 @@
-# doc-rag-mcp — MCP de Documentação com RAG (Go + Qdrant + OpenAI/Ollama)
+# doc-rag-mcp — MCP de Documentação com RAG (Go + Qdrant + Ollama, 100% local)
 
 Servidor **MCP** que expõe a documentação/código dos seus projetos via **RAG**:
-escaneia os repositórios → fatia em chunks → gera embeddings (**OpenAI** ou
-**Ollama local**) → salva no **Qdrant** (local, via Docker) → serve busca
-semântica como **tools MCP** para qualquer LLM (Claude Code, Opencode, Cursor,
-OpenAI, etc).
+escaneia os repositórios → fatia em chunks → gera embeddings (**Ollama
+local**, sem API externa, sem key) → salva no **Qdrant** (local, via Docker)
+→ serve busca semântica como **tools MCP** para qualquer LLM (Claude Code,
+Opencode, Cursor, etc).
 
 ## Arquitetura
 
 ```
 ┌──────────────┐   indexa    ┌──────────┐  embeddings  ┌───────────┐
 │  neurolead   │ ──────────▶ │ indexer  │ ───────────▶ │  Qdrant   │
-│  neurolead-  │   chunks    │ (Go CLI) │  OpenAI API │ (Docker,  │
-│  client      │             │          │  text-emb-  │  :6333)   │
-└──────────────┘             └──────────┘  3-small    └─────┬─────┘
+│  neurolead-  │   chunks    │ (Go CLI) │  Ollama     │ (Docker,  │
+│  client      │             │          │  nomic-     │  :6333)   │
+└──────────────┘             └──────────┘  embed-text └─────┬─────┘
                                                               │ busca
 ┌────────────┐  MCP tools   ┌───────────────┐  query vec     │
 │ Claude     │ ◀─────────── │  mcp-server   │ ─────────────┘
 │ Opencode   │  stdio ou    │  (Go, tools:  │
-│ OpenAI...  │  Streamable  │  search_docs, │
+│ ...        │  Streamable  │  search_docs, │
 └────────────┘  HTTP /mcp   │  get_document,│
                             │  list_*, ...) │
                             └───────────────┘
@@ -31,9 +31,11 @@ OpenAI, etc).
 | `search_docs` | Busca semântica + keyword (`query`, `project?` csv cross-project, `top_k?` máx 50, `diversify?`, `max_per_file?`, `path_prefix?`, `language?`, `pure_vector?`) |
 | `grep_docs` | Inventário literal: todos os arquivos com o termo + ocorrências (`pattern`, `project?`, `path_prefix?`, `limit?` máx 500) |
 | `get_document` | Arquivo completo (`project`, `path`) |
+| `get_file_doc` | Documentação gerada por LLM de um arquivo (`project`, `path`) — com aviso de que pode conter erros |
+| `search_file_docs` | Busca semântica sobre as docs geradas (`query`, `project?`, `top_k?` máx 20, `path_prefix?`) — melhor para "o que esse módulo faz" |
 | `list_projects` | Projetos + contagem + data da última indexação |
-| `list_docs` | Arquivos de um projeto (`project`, `limit?`, `prefix?`) |
-| `index_status` | Provider, coleção, dims, total de pontos |
+| `list_docs` | Arquivos de um projeto (`project`, `limit?`, `prefix?`) — marca `· doc gerada` quando há doc |
+| `index_status` | Servidor (nome+versão), provider, coleção, dims, total de pontos + cobertura de docs geradas |
 
 **Como pesquisar bem (lições da análise MCP-vs-grep):**
 - `search_docs` = entender o padrão (ranking com diversidade por arquivo + match literal, força forte ≥0.55)
@@ -44,8 +46,9 @@ OpenAI, etc).
 
 ```bash
 cd doc-rag-mcp
-cp .env.example .env   # preencha OPENAI_API_KEY
-docker compose up -d --build     # sobe qdrant + mcp-server
+cp .env.example .env   # sem key externa — tudo local
+docker compose up -d --build     # sobe qdrant + ollama + mcp-server
+docker compose exec ollama ollama pull nomic-embed-text   # ou: make ollama-pull
 docker compose run --rm indexer --all   # indexa neurolead + neurolead-client
 curl localhost:8080/health
 curl "localhost:8080/search?q=como+funciona+autenticação"
@@ -71,7 +74,7 @@ go build -o ~/.local/bin/doc-rag-mcp ./cmd/server
 claude mcp add doc-rag -- ./bin... # exemplo:
 claude mcp add doc-rag -- ~/.local/bin/doc-rag-mcp --transport stdio
 # com env:
-QDRANT_URL=http://localhost:6333 OPENAI_API_KEY=sk-... ~/.local/bin/doc-rag-mcp --transport stdio
+QDRANT_URL=http://localhost:6333 OLLAMA_URL=http://localhost:11434 ~/.local/bin/doc-rag-mcp --transport stdio
 ```
 
 Ou via HTTP (servidor Docker rodando):
@@ -105,7 +108,7 @@ Para stdio no opencode:
       "enabled": true,
       "environment": {
         "QDRANT_URL": "http://localhost:6333",
-        "OPENAI_API_KEY": "sk-..."
+        "OLLAMA_URL": "http://localhost:11434"
       }
     }
   }
@@ -114,7 +117,7 @@ Para stdio no opencode:
 
 Veja `examples/opencode.json` e `examples/claude.json`.
 
-### OpenAI / qualquer cliente Streamable HTTP
+### Qualquer cliente Streamable HTTP
 
 Endpoint: `POST http://localhost:8080/mcp` (MCP Streamable HTTP).
 Debug REST (sem MCP): `GET /search?q=...&project=...`.
@@ -122,15 +125,17 @@ Debug REST (sem MCP): `GET /search?q=...&project=...`.
 ## Reindexar
 
 ```bash
-# tudo (OpenAI → coleção docs):
+# tudo (coleção docs, Ollama local), incremental por padrão (só o diff):
 docker compose run --rm indexer --all
 # um projeto:
 docker compose run --rm indexer --project neurolead --path /projects/neurolead
-# incremental (mantém o existente):
-docker compose run --rm indexer --all --no-clean
+# reindex completo (apaga tudo antes — só para migrações de dims/modelo):
+docker compose run --rm indexer --all --clean
+# simular sem escrever nada (conta inalterados/a-embedar/obsoletos):
+docker compose run --rm indexer --all --dry-run
 ```
 
-> O modo incremental (`--no-clean`) compara o hash do conteúdo de cada chunk
+> O modo padrão (incremental) compara o hash do conteúdo de cada chunk
 > com o que já está no Qdrant: chunks inalterados são pulados (sem chamar o
 > provider de embedding), só os novos/alterados são reembedados, e pontos de
 > arquivos removidos/renomeados/encurtados são apagados automaticamente.
@@ -138,13 +143,24 @@ docker compose run --rm indexer --all --no-clean
 > índice é reembedado uma vez (os pontos antigos não têm o novo esquema de
 > ID/hash) — isso também limpa qualquer duplicação deixada por versões
 > anteriores do modo incremental.
+>
+> Trocar de modelo/dims (`OLLAMA_MODEL`, `OLLAMA_EMBED_DIMS`) sem recriar a
+> coleção mistura vetores incompatíveis: o incremental aborta com erro
+> `dims mismatch` nesse caso — rode uma vez com `--clean`, que recria a
+> coleção automaticamente.
+>
+> Lotes de embed+upsert rodam em paralelo (`--embed-concurrency`, default 4)
+> com retry (3 tentativas, backoff) — use `--embed-concurrency 1` para
+> sequencial determinístico.
 
 Além do hash de conteúdo, o indexer evita até **ler** um arquivo quando
 mtime + tamanho + nº de chunks batem exatamente com o que já está indexado
 — só nesse caso ele é pulado sem reabrir/rehashear; qualquer edição real
 (ou uma reindexação anterior interrompida no meio) cai de volta no caminho
-normal de releitura. Dentro de um mesmo scan, arquivos modificados mais
-recentemente são processados primeiro.
+normal de releitura. Chunks cujo corpo já existe no índice (rename/move,
+conteúdo deslocado ou duplicado entre arquivos) **copiam o vetor** em vez
+de reembedar — rename custa milissegundos, não um reembed. Dentro de um
+mesmo scan, arquivos modificados mais recentemente são processados primeiro.
 
 ### Modo contínuo (`--watch`)
 
@@ -160,33 +176,47 @@ Repete a indexação incremental a cada `--interval` (default 10m; também
 configurável no Docker via `REINDEX_INTERVAL`), até receber Ctrl-C/SIGTERM
 — o progresso já persistido fica salvo, e a interrupção é reportada como
 parada limpa, não como falha. `--watch` sempre roda em modo incremental
-(ignora `--no-clean=false`): repetir um reindex completo a cada ciclo não
+(ignora `--clean`): repetir um reindex completo a cada ciclo não
 faria sentido. É esse ciclo periódico que também funciona como
 "monitoramento" de exclusões: um arquivo apagado do disco tem seus pontos
 removidos do Qdrant no ciclo seguinte, com defasagem máxima igual ao
 intervalo configurado — não há verificação em tempo real (fsnotify).
 
-## Modo híbrido: Ollama local (grátis, offline)
-
-O server e o indexer aceitam `--provider ollama` (ou `EMBED_PROVIDER=ollama`).
-O índice OpenAI (`docs`, 1536 dims) fica **intacto** — o Ollama usa coleção
-separada (`docs-ollama`, 768 dims). **Importante:** server e indexer precisam
-usar o mesmo provider, senão a busca não encontra nada.
+Com `--generate-docs`, a etapa filedocs roda no 1º ciclo e depois no máximo
+a cada `--docgen-interval` (default 24h ou `$DOCGEN_INTERVAL` — completions
+são caras, docs não precisam do frescor do embedding), só para
+`--docgen-projects` (csv, vazio = todos; `$DOCGEN_PROJECTS`). No Docker, a
+mesma config vai via `DOCGEN_ENABLED=true` (liga sem a flag),
+`DOCGEN_INTERVAL` e `DOCGEN_PROJECTS`:
 
 ```bash
-# 1. sobe ollama junto:
-docker compose --profile ollama up -d --build
-# 2. baixa o modelo (uma vez):
-docker compose exec ollama ollama pull nomic-embed-text   # ou: make ollama-pull
-# 3. indexa no modo local:
-docker compose run --rm -e EMBED_PROVIDER=ollama indexer --all --provider ollama
-# 4. serve no modo local:
-EMBED_PROVIDER=ollama docker compose up -d mcp-server
-# ou local: go run ./cmd/server --provider ollama
+# local: docs de 2 projetos, no máximo 1x ao dia, junto do watch de 10m:
+go run ./cmd/indexer --all --watch --generate-docs \
+  --docgen-projects neurolead,neurolead-client --docgen-interval 24h
+```
+
+## Modelos locais (Ollama — único modo)
+
+Tudo roda local via Ollama, sem API externa e sem key: embedding com
+`nomic-embed-text` (768 dims) e geração de docs com `qwen2.5-coder:7b`.
+**Importante:** server e indexer precisam usar o mesmo modelo de embedding,
+senão a busca não encontra nada (dims diferentes). O suporte a OpenAI foi
+removido — se você ainda tem um índice antigo (`docs` com 1536 dims), rode
+uma vez `indexer --all --clean` para reindexar em `docs` local e apague as
+coleções legadas (`docs-ollama*`, se existirem).
+
+```bash
+# 1. sobe tudo (qdrant + ollama + server):
+docker compose up -d --build
+# 2. baixa os modelos (uma vez):
+docker compose exec ollama ollama pull nomic-embed-text   # embedding
+docker compose exec ollama ollama pull qwen2.5-coder:7b   # docgen (ou: make ollama-pull)
+# 3. indexa:
+docker compose run --rm indexer --all
 ```
 
 Trocar de modelo Ollama (`OLLAMA_MODEL=mxbai-embed-large`) muda os dims
-(1024) → exige reindex (coleção recriada automaticamente).
+(1024) → exige reindex (`--clean`, coleção recriada automaticamente).
 
 ## Observabilidade (`/status` + `/dashboard`)
 
@@ -198,9 +228,9 @@ nada de hipótese:
 |---|---|---|---|
 | 1 | Saúde da coleção (`status`, `optimizer_status`, `segments_count`) | Qdrant `GET /collections/{ativa}` | nenhum acesso novo |
 | 1 | `indexed_vectors_count` vs `points_count` (aviso quando diff > 1000 ou > 5%) | mesmo `GET` acima | — |
-| 1 | Coleções órfãs (ex.: `docs` OpenAI parada enquanto `EMBED_PROVIDER=ollama`) | `GET /collections` + count por coleção | — |
-| 1 | `dims_mismatch` (provider X dims da coleção — o bug documentado aqui vira aviso ativo) | compara `Embedder.Dims()` com `vectors.size` | — |
-| 1 | Saúde do embedding (Ollama responde + tem o modelo? OpenAI key válida?) | ping barato, sem gerar embedding (cache 30s) | — |
+| 1 | Coleções órfãs (ex.: índice legado de outra config) | `GET /collections` + count por coleção | — |
+| 1 | `dims_mismatch` (modelo X dims da coleção — o bug documentado aqui vira aviso ativo) | compara `Embedder.Dims()` com `vectors.size` | — |
+| 1 | Saúde do embedding (Ollama responde + tem o modelo?) | ping barato (`/api/tags`), sem gerar embedding (cache 30s) | — |
 | 1 | Self do processo (uptime, goroutines, heap) + uso (`/mcp` contados via middleware, latência média) | `runtime` + contador atômico | — |
 | 2 | Status do `indexer --watch` (último ciclo, duração, falhas, próximo ciclo) | heartbeat JSON que o indexer grava em `INDEXER_STATUS_FILE` (volume `status_state` compartilhado) | 1 volume a mais |
 | 3 | Containers do projeto (estado de cada um) | Docker Engine API via socket Unix (`DOCKER_SOCKET`, só `GET` de leitura) | **privilegiado**: montar o socket dá ao container acesso à API do daemon — opt-in, descomente o volume no compose |
@@ -217,7 +247,7 @@ agressivo que o default do Qdrant 0.2/1000 — validado ao vivo: 2.690 →
 único (o `EnsureCollection` não altera coleção existente de propósito):
 
 ```bash
-curl -X PATCH localhost:6333/collections/docs-ollama \
+curl -X PATCH localhost:6333/collections/docs \
   -H 'Content-Type: application/json' \
   -d '{"optimizers_config": {"deleted_threshold": 0.1, "vacuum_min_vector_number": 500}}'
 ```
@@ -238,10 +268,10 @@ descartáveis que são apagadas ao final de cada teste.
 ## Estrutura
 
 ```
-cmd/server      → binário MCP (stdio|http|both, --provider openai|ollama)
-cmd/indexer     → CLI de indexação (--all, --provider)
+cmd/server      → binário MCP (stdio|http|both)
+cmd/indexer     → CLI de indexação (--all, --watch, --generate-docs)
 internal/chunker→ scan + chunking
-internal/embed  → providers OpenAI + Ollama (interface Provider)
+internal/embed  → Ollama local (interface Provider)
 internal/vector → cliente REST Qdrant
 internal/indexer→ orquestra scan→embed→upsert
 internal/mcpserver → tools MCP
@@ -252,25 +282,71 @@ internal/httpapi   → /health + /search debug
 
 | Var | Default | Descrição |
 |---|---|---|
-| `EMBED_PROVIDER` | `openai` | `openai` ou `ollama` (flag `--provider` sobrepõe) |
-| `OPENAI_API_KEY` | — | obrigatória só no modo openai |
-| `OPENAI_EMBED_MODEL` | `text-embedding-3-small` | modelo de embedding |
-| `OPENAI_EMBED_DIMS` | `1536` | dims do vetor (3072 p/ large) |
+| `EMBED_PROVIDER` | `ollama` | reservado (só `ollama`; `openai` foi removido e dá erro explícito) |
 | `OLLAMA_URL` | `http://localhost:11434` | `http://ollama:11434` no compose |
-| `OLLAMA_MODEL` | `nomic-embed-text` | modelo local (768 dims) |
+| `OLLAMA_MODEL` | `nomic-embed-text` | modelo local de embedding (768 dims) |
 | `OLLAMA_EMBED_DIMS` | `768` | 1024 p/ mxbai-embed-large |
 | `QDRANT_URL` | `http://localhost:6333` | `http://qdrant:6333` no compose |
-| `QDRANT_COLLECTION` | `docs` | base; ollama usa `docs-ollama` |
+| `QDRANT_COLLECTION` | `docs` | coleção única (filedocs usa `docs-filedocs`) |
 | `PROJECTS_ROOT` | `/projects` | raiz dos projetos |
 | `HTTP_PORT` | `8080` | porta HTTP |
 | `INDEXER_STATUS_FILE` | — | heartbeat do `--watch` (omitido se vazio) |
 | `STATUS_HISTORY_FILE` | — | JSONL da série temporal (só memória se vazio) |
 | `DOCKER_SOCKET` | — | socket Docker opt-in (omitido se vazio) |
 | `COMPOSE_PROJECT_NAME` | — | filtra containers por projeto (vazio = todos) |
+| `DOCGEN_PROVIDER` | `ollama` | reservado (só `ollama`) |
+| `DOCGEN_MODEL` | `qwen2.5-coder:7b` | modelo local de geração |
+| `DOCGEN_ENABLED` | — | `true` liga o `--generate-docs` do indexer sem a flag |
+| `DOCGEN_INTERVAL` | `24h` | intervalo mínimo da etapa filedocs no `--watch` |
+| `DOCGEN_PROJECTS` | — | csv de projetos com docs no `--watch` (vazio = todos) |
+
+## Documentação automática por arquivo (`cmd/docgen` + coleção `-filedocs`)
+
+Além de indexar para busca, o projeto gera **documentação legível por
+arquivo** (propósito, API pública, dependências, observações) via LLM local
+(`qwen2.5-coder:7b`, validado: doc correta em PT, sem inventar). A doc é
+persistida na coleção `<base>-filedocs` (1 ponto por arquivo, vetor =
+embedding da prosa) e servida via `get_file_doc`/`search_file_docs`;
+`list_docs` marca quem tem doc e `index_status`/`/status` reportam a cobertura.
+
+```bash
+# um pacote (stdout + Qdrant):
+go run ./cmd/docgen --project demo --path ./internal/indexerstatus
+# todos os projetos, salvando em docs/ (espelha <projeto>/<path>.md):
+go run ./cmd/docgen --all --out ./docs-geradas
+# só markdown, sem tocar no Qdrant:
+go run ./cmd/docgen --all --store=false --out ./docs-geradas
+# como etapa do indexer (após o embed+upsert de cada projeto):
+go run ./cmd/indexer --all --generate-docs
+# simular (sem LLM, sem writes):
+go run ./cmd/docgen --all --dry-run
+```
+
+Regras da v1: mesmas exclusões do chunker (segredos, lockfiles, binários),
+pula arquivos com <20 linhas e maiores que 30KB (`--max-bytes`), concorrência
+2 (`--concurrency`), incremental por `source_hash` (só gera para
+novos/alterados; remove pontos de arquivos apagados). Toda doc gerada
+carrega o aviso "conteúdo de LLM, pode conter erros" — os chunks brutos
+continuam a fonte autoritativa.
 
 ## Roadmap
 
-- [Geração automática de documentação por arquivo](docs/plano-auto-documentacao.md) —
-  planejamento (não implementado) de uma segunda capacidade além da indexação
-  para busca: gerar e manter em sincronia um resumo/documentação por arquivo,
-  servido por novas tools MCP.
+- [x] Geração automática de documentação por arquivo — Fases 1-4 prontas:
+  `internal/docgen` (interface + provider Ollama) + `internal/filedocs`
+  (coleção `-filedocs`, incremental por `source_hash`, `--dry-run`) +
+  `cmd/docgen` (CLI) + flag `--generate-docs` no `cmd/indexer` (com intervalo
+  próprio `--docgen-interval` default 24h e opt-in por projeto
+  `--docgen-projects` no `--watch`) + tools
+  `get_file_doc`/`search_file_docs` + `has_doc` em `list_docs` + cobertura em
+  `index_status`/`/status` (incl. seção no `/dashboard`).
+- [x] Remoção OpenAI (só modelos locais) — `internal/embed/openai.go` e
+  `internal/docgen/openai.go` deletados; `EMBED_PROVIDER` default `ollama`
+  (`openai` dá erro explícito); coleção canônica `docs` (era `docs-ollama`);
+  índice legado OpenAI (1536 dims) migrado via reindex `--clean`. Ver
+  "Modelos locais" acima.
+- [x] [Endurecimento do reprocessamento incremental](docs/plano-auto-documentacao.md#anexo-a--endurecimento-do-reprocessamento-incremental-pré-requisito-2026-10-07) —
+  8 pontos implementados em 2026-10-07 (pré-requisito do docgen): default
+  incremental (`Clean=false`), visibilidade `pulados sem ler` vs `hash igual`
+  vs `copiados`, reuso por conteúdo sem reembed (rename/move/duplicata),
+  índice payload + paginação do scroll, embed com pool+retry, abort em troca
+  de dims, `--dry-run`.

@@ -6,9 +6,9 @@ import (
 	"strings"
 )
 
-// Provider abstrai a origem dos embeddings (OpenAI API ou Ollama local).
-// Ambos os binários (server e indexer) devem usar o mesmo provider +
-// a mesma coleção, senão a busca não encontra nada (dims diferentes).
+// Provider abstrai a origem dos embeddings (100% local via Ollama).
+// Server e indexer devem usar o mesmo modelo de embedding + a mesma
+// coleção, senão a busca não encontra nada (dims diferentes).
 type Provider interface {
 	Embed(ctx context.Context, texts []string) ([][]float32, error)
 	EmbedQuery(ctx context.Context, q string) ([]float32, error)
@@ -24,37 +24,21 @@ type Pinger interface {
 }
 
 const (
-	ProviderOpenAI = "openai"
+	// ProviderOllama é o único provider suportado (local, grátis, offline).
+	// O suporte a OpenAI foi removido — ver docs de migração no README.
 	ProviderOllama = "ollama"
 )
 
-// NormalizeProvider valida "openai" | "ollama" (default openai).
+// NormalizeProvider valida o provider de embedding (default ollama).
+// "openai" é rejeitado com erro explícito (removido, não apenas
+// desconhecido) para não falhar de forma obscura em configs antigas.
 func NormalizeProvider(p string) (string, error) {
 	p = strings.ToLower(strings.TrimSpace(p))
-	if p == "" {
-		return ProviderOpenAI, nil
+	if p == "" || p == ProviderOllama {
+		return ProviderOllama, nil
 	}
-	if p == ProviderOpenAI || p == ProviderOllama {
-		return p, nil
+	if p == "openai" {
+		return "", fmt.Errorf("provider %q foi removido (só modelos locais via ollama) — ajuste EMBED_PROVIDER/--provider para ollama", p)
 	}
-	return "", fmt.Errorf("EMBED_PROVIDER inválido %q (use openai|ollama)", p)
-}
-
-// CollectionFor resolve a coleção Qdrant por provider.
-//
-// openai -> base como está ("docs"): preserva o índice existente (1536 dims).
-// ollama -> base + "-ollama" ("docs-ollama"): dims diferentes (768),
-// recriar a coleção é obrigatório, então o índice OpenAI fica intacto.
-func CollectionFor(provider, base string) string {
-	if base == "" {
-		base = "docs"
-	}
-	if provider == ProviderOllama {
-		// evita sufixo duplo se o usuário já configurou "docs-ollama"
-		if strings.HasSuffix(base, "-ollama") {
-			return base
-		}
-		return base + "-ollama"
-	}
-	return base
+	return "", fmt.Errorf("EMBED_PROVIDER inválido %q (use ollama)", p)
 }

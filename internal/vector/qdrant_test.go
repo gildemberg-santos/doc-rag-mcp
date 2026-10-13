@@ -467,3 +467,128 @@ func TestDoWrapsNon2xxStatusWithBody(t *testing.T) {
 		t.Errorf("mensagem de erro deveria citar status e corpo da resposta: %v", err)
 	}
 }
+
+func TestDeleteCollectionCallsDeleteOnCollection(t *testing.T) {
+	c, reqs := newFakeQdrant(t, func(w http.ResponseWriter, r *http.Request, body map[string]any) {
+		writeJSON(w, 200, map[string]any{"result": true})
+	})
+	if err := c.DeleteCollection(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(*reqs) != 1 {
+		t.Fatalf("esperava 1 requisição, foram %d", len(*reqs))
+	}
+	got := (*reqs)[0]
+	if got.method != http.MethodDelete || got.path != "/collections/testcol" {
+		t.Fatalf("esperava DELETE /collections/testcol, veio %s %s", got.method, got.path)
+	}
+}
+
+func TestEnsurePayloadIndexCreatesKeywordIndexOnProject(t *testing.T) {
+	c, reqs := newFakeQdrant(t, func(w http.ResponseWriter, r *http.Request, body map[string]any) {
+		writeJSON(w, 200, map[string]any{"result": map[string]any{}})
+	})
+	if err := c.EnsurePayloadIndex(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(*reqs) != 1 {
+		t.Fatalf("esperava 1 requisição, foram %d", len(*reqs))
+	}
+	got := (*reqs)[0]
+	if got.method != http.MethodPut || got.path != "/collections/testcol/index" {
+		t.Fatalf("esperava PUT /collections/testcol/index, veio %s %s", got.method, got.path)
+	}
+	if got.body["field_name"] != "project" || got.body["field_schema"] != "keyword" {
+		t.Fatalf("índice deveria ser keyword sobre 'project', veio %v", got.body)
+	}
+}
+
+func TestEnsurePayloadIndexPropagatesError(t *testing.T) {
+	c, _ := newFakeQdrant(t, func(w http.ResponseWriter, r *http.Request, body map[string]any) {
+		writeJSON(w, 400, map[string]any{"status": map[string]any{"error": "bad index"}})
+	})
+	if err := c.EnsurePayloadIndex(context.Background()); err == nil {
+		t.Fatal("esperava erro em status 400")
+	}
+}
+
+func TestEnsureKeywordIndexSendsFieldName(t *testing.T) {
+	c, reqs := newFakeQdrant(t, func(w http.ResponseWriter, r *http.Request, body map[string]any) {
+		writeJSON(w, 200, map[string]any{"result": map[string]any{}})
+	})
+	if err := c.EnsureKeywordIndex(context.Background(), "path"); err != nil {
+		t.Fatal(err)
+	}
+	if len(*reqs) != 1 {
+		t.Fatalf("esperava 1 requisição, foram %d", len(*reqs))
+	}
+	got := (*reqs)[0]
+	if got.body["field_name"] != "path" || got.body["field_schema"] != "keyword" {
+		t.Fatalf("índice deveria ser keyword sobre 'path', veio %v", got.body)
+	}
+}
+
+func TestWithCollectionSharesBaseURL(t *testing.T) {
+	c := New("http://localhost:6333/", "docs")
+	d := c.WithCollection("docs-filedocs")
+	if d.Collection != "docs-filedocs" {
+		t.Fatalf("esperava coleção docs-filedocs, veio %q", d.Collection)
+	}
+	if d.BaseURL != c.BaseURL {
+		t.Fatalf("deveria reaproveitar o BaseURL: %q vs %q", d.BaseURL, c.BaseURL)
+	}
+	if c.Collection != "docs" {
+		t.Fatalf("cliente original não deveria mudar: %q", c.Collection)
+	}
+}
+
+func TestRetrieveVectorsSendsHasIDFilterWithVector(t *testing.T) {
+	c, reqs := newFakeQdrant(t, func(w http.ResponseWriter, r *http.Request, body map[string]any) {
+		if r.Method != http.MethodPost || r.URL.Path != "/collections/testcol/points/scroll" {
+			t.Errorf("esperava POST .../points/scroll, veio %s %s", r.Method, r.URL.Path)
+		}
+		writeJSON(w, 200, map[string]any{"result": map[string]any{
+			"points": []map[string]any{
+				{"id": "id-1", "vector": []float64{0.1, 0.2}},
+				{"id": "id-2", "vector": []float64{0.3, 0.4}},
+			},
+		}})
+	})
+	got, err := c.RetrieveVectors(context.Background(), []string{"id-1", "id-2", "id-missing"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(*reqs) != 1 {
+		t.Fatalf("esperava 1 requisição (cabe num lote só), foram %d", len(*reqs))
+	}
+	body := (*reqs)[0].body
+	if body["with_vector"] != true {
+		t.Errorf("deveria pedir with_vector=true, veio %v", body["with_vector"])
+	}
+	if body["with_payload"] != false {
+		t.Errorf("payload é reconstruído pelo chamador — deveria pedir with_payload=false, veio %v", body["with_payload"])
+	}
+	if len(got) != 2 || got[0].ID != "id-1" || got[1].ID != "id-2" {
+		t.Fatalf("esperava os 2 pontos existentes (ausente omitido), veio %+v", got)
+	}
+	if len(got[0].Vector) != 2 || got[0].Vector[0] != 0.1 {
+		t.Fatalf("vetor do ponto id-1 veio errado: %v", got[0].Vector)
+	}
+}
+
+func TestRetrieveVectorsSkipsPointsWithoutVector(t *testing.T) {
+	c, _ := newFakeQdrant(t, func(w http.ResponseWriter, r *http.Request, body map[string]any) {
+		writeJSON(w, 200, map[string]any{"result": map[string]any{
+			"points": []map[string]any{
+				{"id": "sem-vetor"},
+			},
+		}})
+	})
+	got, err := c.RetrieveVectors(context.Background(), []string{"sem-vetor"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("ponto sem vetor deveria ser omitido, veio %+v", got)
+	}
+}

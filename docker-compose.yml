@@ -9,16 +9,17 @@ services:
       - qdrant_storage:/qdrant/storage
     restart: unless-stopped
 
-  # Embeddings 100% locais (opcional; só usado com EMBED_PROVIDER=ollama).
-  # Após subir: docker compose exec ollama ollama pull nomic-embed-text
+  # Embeddings e geração 100% locais (serviço obrigatório — o provider
+  # OpenAI foi removido). Após subir: docker compose exec ollama ollama pull
+  # nomic-embed-text (embedding) + qwen2.5-coder:7b (docgen, se usar filedocs).
   # Sem ports: fala só na rede interna (evita conflito com ollama do host).
+  # GPU: desça um `deploy.resources.reservations` com nvidia se o host tiver.
   ollama:
     image: ollama/ollama:latest
     container_name: doc-rag-ollama
     volumes:
       - ollama_data:/root/.ollama
     restart: unless-stopped
-    profiles: ["ollama"]
 
   mcp-server:
     build: .
@@ -28,9 +29,7 @@ services:
     environment:
       QDRANT_URL: http://qdrant:6333
       QDRANT_COLLECTION: ${QDRANT_COLLECTION:-docs}
-      EMBED_PROVIDER: ${EMBED_PROVIDER:-openai}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      OPENAI_EMBED_MODEL: ${OPENAI_EMBED_MODEL:-text-embedding-3-small}
+      EMBED_PROVIDER: ${EMBED_PROVIDER:-ollama}
       OLLAMA_URL: http://ollama:11434
       OLLAMA_MODEL: ${OLLAMA_MODEL:-nomic-embed-text}
       PROJECTS_ROOT: /projects
@@ -54,22 +53,30 @@ services:
       # - /var/run/docker.sock:/var/run/docker.sock:ro
     depends_on:
       - qdrant
+      - ollama
     restart: unless-stopped
     command: ["--transport", "http", "--http-addr", ":8080"]
 
-  # Indexador one-shot: docker compose run --rm indexer --all
-  # Local: docker compose run --rm -e EMBED_PROVIDER=ollama indexer --all --provider ollama
+  # Indexador one-shot (incremental por padrão — só o diff):
+  #  docker compose run --rm indexer --all
+  # Reindex completo (só p/ migração de modelo/dims):
+  #  docker compose run --rm indexer --all --clean
+  # Docs geradas (coleção -filedocs, opt-in — completions têm custo):
+  #  docker compose run --rm indexer --all --generate-docs
   indexer:
     build: .
     entrypoint: ["mcp-indexer"]
     environment:
       QDRANT_URL: http://qdrant:6333
       QDRANT_COLLECTION: ${QDRANT_COLLECTION:-docs}
-      EMBED_PROVIDER: ${EMBED_PROVIDER:-openai}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      OPENAI_EMBED_MODEL: ${OPENAI_EMBED_MODEL:-text-embedding-3-small}
+      EMBED_PROVIDER: ${EMBED_PROVIDER:-ollama}
       OLLAMA_URL: http://ollama:11434
       OLLAMA_MODEL: ${OLLAMA_MODEL:-nomic-embed-text}
+      DOCGEN_PROVIDER: ${DOCGEN_PROVIDER:-}
+      DOCGEN_MODEL: ${DOCGEN_MODEL:-}
+      DOCGEN_ENABLED: ${DOCGEN_ENABLED:-}
+      DOCGEN_INTERVAL: ${DOCGEN_INTERVAL:-}
+      DOCGEN_PROJECTS: ${DOCGEN_PROJECTS:-}
       PROJECTS_ROOT: /projects
       INDEXER_STATUS_FILE: /state/indexer-status.json
     volumes:
@@ -80,22 +87,54 @@ services:
       - status_state:/state
     depends_on:
       - qdrant
+      - ollama
+    profiles: ["tools"]
+
+  # Gerador de documentação por arquivo (coleção -filedocs + .md opcional):
+  #  docker compose run --rm docgen --all
+  #  docker compose run --rm docgen --project neurolead --out ./docs-geradas --store=false
+  docgen:
+    build: .
+    entrypoint: ["mcp-docgen"]
+    environment:
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-docs}
+      EMBED_PROVIDER: ${EMBED_PROVIDER:-ollama}
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-nomic-embed-text}
+      DOCGEN_PROVIDER: ${DOCGEN_PROVIDER:-}
+      DOCGEN_MODEL: ${DOCGEN_MODEL:-}
+      PROJECTS_ROOT: /projects
+    volumes:
+      - ../neurolead:/projects/neurolead:ro
+      - ../neurolead-client:/projects/neurolead-client:ro
+      - ../atendimento:/projects/atendimento:ro
+      - .:/projects/doc-rag-mcp:ro
+    depends_on:
+      - qdrant
+      - ollama
     profiles: ["tools"]
 
   # Indexador contínuo: reindexação incremental a cada REINDEX_INTERVAL,
   # com remoção automática de pontos de arquivos excluídos no mesmo ciclo.
   # Subir: docker compose --profile watch up -d indexer-watch
+  # Docs geradas no watch (Fase 4): ligue com DOCGEN_ENABLED=true; a etapa
+  # de filedocs roda no 1º ciclo e depois a cada DOCGEN_INTERVAL (default
+  # 24h), só para DOCGEN_PROJECTS (csv, vazio = todos).
   indexer-watch:
     build: .
     entrypoint: ["mcp-indexer"]
     environment:
       QDRANT_URL: http://qdrant:6333
       QDRANT_COLLECTION: ${QDRANT_COLLECTION:-docs}
-      EMBED_PROVIDER: ${EMBED_PROVIDER:-openai}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      OPENAI_EMBED_MODEL: ${OPENAI_EMBED_MODEL:-text-embedding-3-small}
+      EMBED_PROVIDER: ${EMBED_PROVIDER:-ollama}
       OLLAMA_URL: http://ollama:11434
       OLLAMA_MODEL: ${OLLAMA_MODEL:-nomic-embed-text}
+      DOCGEN_PROVIDER: ${DOCGEN_PROVIDER:-}
+      DOCGEN_MODEL: ${DOCGEN_MODEL:-}
+      DOCGEN_ENABLED: ${DOCGEN_ENABLED:-}
+      DOCGEN_INTERVAL: ${DOCGEN_INTERVAL:-}
+      DOCGEN_PROJECTS: ${DOCGEN_PROJECTS:-}
       PROJECTS_ROOT: /projects
       INDEXER_STATUS_FILE: /state/indexer-status.json
     volumes:
@@ -106,6 +145,7 @@ services:
       - status_state:/state
     depends_on:
       - qdrant
+      - ollama
     profiles: ["watch"]
     restart: unless-stopped
     command: ["--all", "--watch", "--interval", "${REINDEX_INTERVAL:-10m}"]

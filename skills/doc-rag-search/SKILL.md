@@ -41,7 +41,8 @@ O índice RAG **não é um espelho fiel do disco**:
 | Entender como algo funciona / explicar um padrão em prosa | `search_docs` (semântico) |
 | Lista exaustiva de todos os arquivos que mencionam um termo | `grep_docs` (MCP, cross-project) **e/ou** `rg`/`grep` local se o repo estiver no seu checkout |
 | Conteúdo completo de um arquivo específico já identificado | Se o repo está no seu checkout local: **leitura direta do arquivo** (autoritativa, sempre atual). Se é um projeto que você não tem localmente (ou quer o que está indexado): `get_document` |
-| Mapear a estrutura de um projeto | `list_docs` (indexado) + `find`/`ls` local quando disponível |
+| O que um arquivo/módulo faz (explicação em prosa) | `get_file_doc` (doc gerada por LLM do arquivo) **e/ou** `search_file_docs` (busca semântica sobre as docs geradas) — ⚠️ conteúdo de LLM, pode conter erros; confirme no código |
+| Mapear a estrutura de um projeto | `list_docs` (indexado, com marca `· doc gerada` quando há doc) + `find`/`ls` local quando disponível |
 | Quais projetos existem no RAG, há quanto tempo foram indexados | `list_projects` |
 | Saúde/estado do índice (provider, dims, nº de pontos) | `index_status` |
 | Editar um arquivo | **Nunca edite a partir do conteúdo do RAG.** Releia o arquivo local antes de qualquer edição — o índice pode estar defasado em relação ao disco. |
@@ -88,13 +89,20 @@ O índice RAG **não é um espelho fiel do disco**:
   perguntas de "onde/quantos".
 - `get_document(project, path)` — arquivo indexado completo, sem truncar.
   Use depois de localizar o arquivo certo.
+- `get_file_doc(project, path)` — documentação gerada por LLM do arquivo
+  (propósito, API pública, dependências). Retorna "ainda não gerada" se o
+  docgen nunca rodou para ele. ⚠️ Pode conter erros — confirme no código.
+- `search_file_docs(query, project?, top_k?, path_prefix?)` — busca semântica
+  sobre as docs geradas (prosa). Melhor que `search_docs` para "o que esse
+  módulo faz / onde fica a lógica de X".
 - `list_projects()` — projetos + contagem de chunks + data da última
   indexação. Primeiro passo para checar freshness.
 - `list_docs(project, limit?, prefix?)` — estrutura de arquivos indexados de
-  um projeto.
-- `index_status()` — provider/coleção/dims/total de pontos; serve para
-  diagnosticar "por que a busca não encontra nada" (provider errado, coleção
-  vazia, dims mismatch).
+  um projeto (`· doc gerada` = tem doc na coleção -filedocs).
+- `index_status()` — servidor (nome+versão, para detectar schema
+  desatualizado no client), provider/coleção/dims/total de pontos +
+  cobertura de docs geradas; serve para diagnosticar "por que a busca não
+  encontra nada" (provider errado, coleção vazia, dims mismatch).
 
 ## Erros comuns a evitar
 

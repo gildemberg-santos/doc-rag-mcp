@@ -24,6 +24,12 @@ type Handler struct {
 	Qdrant   *vector.Client
 	Embedder embed.Provider
 
+	// FileDocs aponta para a coleção "-filedocs" (nil = seção omitida).
+	FileDocs *vector.Client
+	// ServerName/ServerVersion identificam o binário no /status.
+	ServerName    string
+	ServerVersion string
+
 	// IndexerStatusFile, se setado, é lido em todo /status — heartbeat que
 	// o indexer --watch grava após cada ciclo (ver internal/indexerstatus).
 	// Vazio = seção omitida (deployment sem --watch, ou sem volume
@@ -133,17 +139,29 @@ type ContainerStat struct {
 	Status string `json:"status"`
 }
 
+// FileDocsStat resume a coleção de documentação gerada (-filedocs).
+type FileDocsStat struct {
+	Collection string         `json:"collection"`
+	Points     int64          `json:"points"`
+	ByProject  map[string]int `json:"by_project,omitempty"`
+}
+
 // StatusResponse é o payload JSON de /status — base pro dashboard vivo.
 type StatusResponse struct {
-	OK         bool          `json:"ok"`
-	CheckedAt  string        `json:"checked_at"`
-	QdrantURL  string        `json:"qdrant_url"`
-	Collection string        `json:"collection"`
-	Provider   string        `json:"provider"`
-	Dims       int           `json:"dims"`
-	Points     int64         `json:"points"`
-	Projects   []ProjectStat `json:"projects"`
-	Error      string        `json:"error,omitempty"`
+	OK            bool          `json:"ok"`
+	CheckedAt     string        `json:"checked_at"`
+	ServerName    string        `json:"server_name,omitempty"`
+	ServerVersion string        `json:"server_version,omitempty"`
+	QdrantURL     string        `json:"qdrant_url"`
+	Collection    string        `json:"collection"`
+	Provider      string        `json:"provider"`
+	Dims          int           `json:"dims"`
+	Points        int64         `json:"points"`
+	Projects      []ProjectStat `json:"projects"`
+	Error         string        `json:"error,omitempty"`
+
+	// Docs geradas (coleção -filedocs): cobertura por projeto.
+	FileDocs *FileDocsStat `json:"filedocs,omitempty"`
 
 	// Nível 1 — saúde detalhada, sem acesso novo nenhum.
 	CollectionHealth *CollectionHealth `json:"collection_health,omitempty"`
@@ -166,8 +184,8 @@ type StatusResponse struct {
 const statusCacheTTL = 5 * time.Second
 
 // embedHealthCacheTTL é mais longo que o do resto do /status: pingar o
-// provider de embedding é mais caro (rede externa, no caso OpenAI tem
-// rate-limit) — não precisa ser tão fresco quanto a contagem de pontos.
+// provider de embedding é barato e local (Ollama); o cache existe para não
+// martelar o /api/tags a cada /status.
 const embedHealthCacheTTL = 30 * time.Second
 
 // Status reporta o estado do índice: GET /status (JSON).
@@ -254,6 +272,8 @@ func (h *Handler) computeStatus(ctx context.Context) StatusResponse {
 	// base carrega o contexto estático (útil mesmo quando o Qdrant está
 	// fora — o dashboard mostra contra o que se tentou conectar).
 	base := StatusResponse{CheckedAt: now, Self: h.selfStats()}
+	base.ServerName = h.ServerName
+	base.ServerVersion = h.ServerVersion
 	if h.Qdrant != nil {
 		base.QdrantURL = h.Qdrant.BaseURL
 		base.Collection = h.Qdrant.Collection
@@ -336,6 +356,14 @@ func (h *Handler) computeStatus(ctx context.Context) StatusResponse {
 	// Nível 1: embed provider realmente alcançável (não só o Qdrant).
 	resp.EmbedHealth = h.embedHealth(ctx)
 
+	// Docs geradas: cobertura da coleção -filedocs (best-effort — nunca
+	// falha o /status; sem FileDocs configurado a seção some).
+	if h.FileDocs != nil {
+		if stat, err := h.fileDocsStat(ctx); err == nil {
+			resp.FileDocs = stat
+		}
+	}
+
 	// Nível 2: status do indexer --watch (heartbeat em arquivo).
 	if h.IndexerStatusFile != "" {
 		if st, err := indexerstatus.Read(h.IndexerStatusFile); err == nil {
@@ -356,6 +384,32 @@ func (h *Handler) computeStatus(ctx context.Context) StatusResponse {
 	}
 
 	return resp
+}
+
+// fileDocsStat conta os pontos da coleção -filedocs agrupados por projeto.
+// Usa só o campo "project" (scroll leve, 500/página).
+func (h *Handler) fileDocsStat(ctx context.Context) (*FileDocsStat, error) {
+	stat := &FileDocsStat{Collection: h.FileDocs.Collection, ByProject: map[string]int{}}
+	var offset any
+	for {
+		pts, next, err := h.FileDocs.ScrollFields(ctx, nil, 500, offset, []string{"project"})
+		if err != nil {
+			return nil, err
+		}
+		for _, p := range pts {
+			proj, _ := p.Payload["project"].(string)
+			if proj == "" {
+				continue
+			}
+			stat.ByProject[proj]++
+			stat.Points++
+		}
+		if next == nil {
+			break
+		}
+		offset = next
+	}
+	return stat, nil
 }
 
 func (h *Handler) selfStats() SelfStats {

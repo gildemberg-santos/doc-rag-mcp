@@ -1,8 +1,11 @@
 # Plano: geração automática de documentação por arquivo
 
-> Status: planejamento, nada implementado ainda. Este documento existe para
-> alinhar decisões antes de abrir issues/PRs. Atualize-o conforme decisões
-> forem tomadas ou revertidas — não é um snapshot congelado.
+> Status: Fases 1–4 implementadas (ver "Fases de implementação").
+> **Remoção OpenAI:** o suporte a OpenAI foi removido — só modelos locais
+> (Ollama). As menções a `internal/embed/openai.go`, `internal/docgen/openai.go`,
+> `gpt-4o-mini` e modo híbrido abaixo são registro histórico do desenho
+> original, não estado atual. Atualize-o conforme decisões forem tomadas ou
+> revertidas — não é um snapshot congelado.
 
 ## Problema
 
@@ -202,28 +205,122 @@ docgen, igual já não entram no de embedding.
 
 ## Fases de implementação
 
-1. **Spike manual** — script/CLI mínimo chamando `docgen.Provider` sobre os
-   291 chunks de `doc-rag-mcp` (o próprio repo), validar prompt e formato de
-   saída antes de qualquer coleção/tool nova.
-2. **MVP** — `internal/docgen` (interface + OpenAI/Ollama), nova coleção,
-   flag `--generate-docs` no `cmd/indexer`, tools `get_file_doc` e
-   `search_file_docs`. Sem incremental ainda (sempre regenera) — só pra
-   validar o pipeline fim a fim num projeto pequeno.
-3. **Incremental + custo controlado** — diff por `source_hash`, concorrência
-   limitada, filtros de arquivo, relato em `/status`.
-4. **Integração com `--watch`** — docgen passa a rodar no ciclo periódico
-   (projetos opt-in via config), com intervalo próprio (provavelmente maior
-   que os 10min do embedding — ex. diário).
+1. **Spike manual** ✅ feito em 2026-10-07 — prompt deste plano (4 seções,
+   PT, `temperature 0.2`) testado ao vivo contra `cmd/indexer/main.go`
+   (269 linhas) em 3 modelos locais (RTX 4050 6GB, host Ollama):
+
+   | Modelo | Resultado |
+   |---|---|
+   | `qwen3:4b` | ❌ reprovado — respondeu em inglês, com raciocínio vazado (`think:false` ainda assim) e formato inutilizável; no 1º teste gastou o budget de tokens "pensando" (`response` vazio) |
+   | `qwen3:8b` (~71s) | ⚠️ minimamente satisfatório — PT correto, 4 seções, leu o arquivo atual, mas **inventou 1 limitação** ("`--clean` só com `--all`", falso) |
+   | `qwen2.5-coder:7b` (~43s) | ✅ aprovado — PT correto, 4 seções, **zero invenções** (listou as 4 funções com assinaturas certas, incl. `apiKeyRequired` recém-criada; observações todas verificáveis) |
+
+   **Decisão (encerra o 1º ponto aberto):** default local
+   `OLLAMA_DOCGEN_MODEL=qwen2.5-coder:7b` (4.7GB, cabe nos 6GB com folga
+   para `num_ctx` 8192); default API `gpt-4o-mini`. Ambos configuráveis via
+   `DOCGEN_MODEL` (`internal/config.Config.DocGenModel`).
+2. **MVP** ✅ implementado — `internal/docgen` (interface + Ollama; o
+   provider OpenAI foi removido depois) +
+   `internal/filedocs` (coleção `<base>-filedocs`, 1 ponto por arquivo) +
+   `cmd/docgen` (CLI: markdown e/ou Qdrant) + flag `--generate-docs` no
+   `cmd/indexer` (Opção A) + tools `get_file_doc`/`search_file_docs` +
+   `has_doc` em `list_docs` + cobertura em `index_status`/`/status`.
+3. **Incremental + custo controlado** ✅ implementado — diff por
+   `source_hash`, concorrência limitada (default 2), filtros de arquivo,
+   limpeza de obsoletos no mesmo ciclo, `--dry-run`, cobertura em
+   `index_status` e `/status`.
+4. **Integração com `--watch`** ✅ implementada — `--generate-docs` roda no
+   1º ciclo e depois no máximo a cada `--docgen-interval` (default 24h ou
+   `$DOCGEN_INTERVAL`; one-shot ignora o throttle), só para
+   `--docgen-projects`/`$DOCGEN_PROJECTS` (csv, vazio = todos). No Docker a
+   mesma config vai via `DOCGEN_ENABLED=true` (liga sem a flag) +
+   `DOCGEN_INTERVAL` + `DOCGEN_PROJECTS` (serviços `indexer`/`indexer-watch`).
+   Ciclos com filedocs adiado logam a próxima janela; chunks indexam sempre.
 5. **(Futuro, fora deste plano)** — eventual escrita de volta no
    código-fonte, geração de um README por diretório agregando os docs de
    arquivo, etc. Não iniciar sem validar as fases 1-4 primeiro.
 
 ## Abertas / decisões pendentes
 
-- Modelo default de docgen (OpenAI e Ollama) — decidir depois do spike
-  manual, com base em qualidade/custo observados, não a priori.
-- Opção A vs B da seção 5 (dentro do indexer vs binário próprio) — decidir
-  depois do MVP, com dados reais de quanto o docgen atrasa o ciclo.
+- ~~Modelo default de docgen (OpenAI e Ollama) — decidir depois do spike
+  manual, com base em qualidade/custo observados, não a priori.~~ Decidido
+  no spike (Fase 1): `qwen2.5-coder:7b` local, `gpt-4o-mini` na API.
+- Opção A vs B da seção 5 (dentro do indexer vs binário próprio) —
+  **A por ora** (flag `--generate-docs`, menos infra); migrar para B se o
+  docgen atrasar o ciclo de embedding na prática.
 - Se `search_file_docs` deve ter diversidade por arquivo como `search_docs`
-  — provavelmente não faz sentido (já é 1 ponto por arquivo), mas revisar
-  quando a tool existir.
+  — **não**: 1 ponto por arquivo, sem diversify (revisado na implementação).
+
+## Anexo A — Endurecimento do reprocessamento incremental (pré-requisito, 2026-10-07)
+
+> Motivação: o incremental que garante "não deletar tudo pra reprocessar
+> tudo" já existe (`internal/indexer/indexer.go`: `ScrollFields` + `shouldSkip`
+> por `mtime+size+chunk_count` + diff por `hash` + delete só de órfãos no fim),
+> com cobertura em `internal/indexer/integration_test.go`. Mas o **default
+> ainda é `Clean=true`** (`cmd/indexer/main.go:66`, `clean := !*noClean`) e
+> `README`/`Makefile`/`docker-compose.yml` induzem full reindex — num
+> `atendimento` de ~1.5G isso é o processamento gigante a evitar. O docgen
+> das fases 3-4 reaproveita o mesmo padrão, então estes 8 pontos são
+> pré-requisito antes de escalar o docgen.
+>
+> **Status em 2026-10-07:** itens 1–8 implementados (ver notas ✅).
+> Desvio do desenho original nos itens 3 e 7: em vez da migração para IDs
+> estáveis por conteúdo (que exigiria um reindex completo único de ~38k
+> chunks e mudaria a semântica das contagens ao colapsar duplicatas), o
+> mesmo efeito (não reembedar conteúdo idêntico) foi obtido por **cópia de
+> vetor** mantendo os IDs por índice — zero migração, pontos antigos sem
+> `body_hash` caem no reembed de antes e se auto-migram ao serem reescritos.
+
+1. **Inverter o default para incremental** ✅ implementado — `Clean=false`
+   padrão, `--clean` opt-in só para migração de dims/modelo (`cmd/indexer/main.go`:
+   `resolveClean` + flags `--clean`/`--no-clean` depreciado + `--watch` força
+   incremental; `internal/indexer/indexer.go:32-34`; `README.md`
+   quickstart/reindex; `docker-compose.yml` comentários). Com cobertura em
+   `cmd/indexer/main_test.go` (`TestResolveClean*`).
+2. **Fast-path `mtime` frágil + visibilidade** ✅ implementado (visibilidade)
+   — contadores separados no log final: `skippedFast` (pulado sem ler) vs
+   `hashHits` (lido, hash igual) vs embedados (`indexer.go`: `skippedFast`,
+   `hashHits`, `embeddedTotal` atômicos; `OnProgress` documentado como
+   thread-safe). `file_hash` agregado avaliado e descartado por ora: o diff
+   por chunk já economiza o embed (custo dominante) e um hash extra por
+   arquivo duplicaria o esquema de payload sem ganho proporcional.
+3. **Cascata de `chunk_index`** ✅ implementado por cópia de vetor
+   (sem migração de IDs) — cada chunk carrega `body_hash` (sha256 do
+   corpo: escopo+texto, sem o header com projeto/path) e cada arquivo um
+   `file_hash` (agregado ordenado dos `body_hash`, mesma granularidade do
+   futuro `source_hash` do docgen). No diff incremental, chunk com corpo
+   idêntico a ponto existente (deslocado por edição no topo, duplicado)
+   copia o vetor (`RetrieveVectors` em lote + 1 `Upsert`) em vez de
+   reembedar; o ponto antigo sai na limpeza de obsoletos ou permanece
+   (duplicata viva). Contador `copiados` no log. Pontos pré-`body_hash`
+   nunca casam e reembedam como antes (auto-migração ao reescrever).
+4. **Scroll completo a cada ciclo** ✅ implementado — paginação 500→1000
+   (`indexer.go:scrollPageSize`) + `EnsurePayloadIndex` (índice keyword
+   `project` via `PUT /collections/{col}/index`, best-effort com aviso em
+   `vector/qdrant.go`; cobertura em `qdrant_test.go`). Cache local de
+   `fileMeta` avaliado e descartado por ora: duplicaria o Qdrant como fonte
+   de verdade com risco de divergência; o scroll com índice já resolve o
+   full-scan.
+5. **Embed sequencial** ✅ implementado — pool de lotes (`EmbedConcurrency`,
+   default 4, `--embed-concurrency`; backpressure via semáforo para não
+   acumular memória) + retry 3 tentativas com backoff 500ms×tentativa e
+   respeito a cancelamento (`withRetry`; cobertura em `indexer_test.go`).
+   Testes de integração com injeção de falha fixam `EmbedConcurrency: 1`
+   para determinismo + `fakeEmbed` thread-safe.
+6. **Troca silenciosa de provider/dims** ✅ implementado — guarda de dims via
+   `CollectionInfo` após `EnsureCollection`: incremental aborta com erro
+   `dims mismatch ... rode com --clean`; `--clean` deleta e recria a coleção
+   (`DeleteCollection` em `vector/qdrant.go`) com o tuning do otimizador +
+   índice payload. `DryRun` só reporta, sem mutar.
+7. **Rename = delete+reembed (custo 2x)** ✅ implementado como caso
+   especial do item 3 — mesmo conteúdo em path novo tem `body_hash` igual
+   (o header com path não entra no `body_hash`) → vetores copiados, zero
+   embeds; fast-path de log por `file_hash` (`movido: a.md → sub/b.md`,
+   com teto de 10 linhas + resumo). Validado ao vivo: rename + duplicata
+   em coleção real → `2 copiados, 0 embedados` em 57ms.
+8. **Sem `--dry-run`** ✅ implementado — `Options.DryRun` + flag `--dry-run`:
+   pula `DeleteByProject`, `Embed`/`Upsert`, `DeletePoints` e recriação de
+   coleção; só conta e loga (`dry-run 🧪`, `contados (dry-run, ...)`).
+
+Ordem executada em 2026-10-07: 1+6 (segurança) → 2+8 (visibilidade) → 4+5
+(throughput) → 3+7 (reuso por conteúdo, sem migração de IDs).

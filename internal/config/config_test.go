@@ -8,9 +8,8 @@ import "testing"
 func clearEnv(t *testing.T) {
 	t.Helper()
 	for _, k := range []string{
-		"QDRANT_URL", "QDRANT_COLLECTION", "EMBED_PROVIDER", "OPENAI_API_KEY",
-		"OPENAI_EMBED_MODEL", "OPENAI_EMBED_DIMS", "OLLAMA_URL", "OLLAMA_MODEL",
-		"OLLAMA_EMBED_DIMS", "PROJECTS_ROOT", "HTTP_PORT", "MCP_NAME", "MCP_VERSION",
+		"QDRANT_URL", "QDRANT_COLLECTION", "EMBED_PROVIDER", "OLLAMA_URL", "OLLAMA_MODEL",
+		"OLLAMA_EMBED_DIMS", "DOCGEN_MODEL", "PROJECTS_ROOT", "HTTP_PORT", "MCP_NAME", "MCP_VERSION",
 		"INDEXER_STATUS_FILE", "DOCKER_SOCKET", "COMPOSE_PROJECT_NAME", "STATUS_HISTORY_FILE",
 	} {
 		t.Setenv(k, "")
@@ -21,19 +20,17 @@ func TestLoadDefaults(t *testing.T) {
 	clearEnv(t)
 	cfg := Load()
 	want := Config{
-		QdrantURL:        "http://localhost:6333",
-		Collection:       "docs",
-		EmbedProvider:    "openai",
-		OpenAIAPIKey:     "",
-		OpenAIEmbedModel: "text-embedding-3-small",
-		EmbedDims:        1536,
-		OllamaURL:        "http://localhost:11434",
-		OllamaModel:      "nomic-embed-text",
-		OllamaDims:       768,
-		ProjectsRoot:     "/projects",
-		HTTPPort:         "8080",
-		MCPName:          "doc-rag-mcp",
-		MCPVersion:       "1.0.0",
+		QdrantURL:      "http://localhost:6333",
+		Collection:     "docs",
+		EmbedProvider:  "ollama",
+		OllamaURL:      "http://localhost:11434",
+		OllamaModel:    "nomic-embed-text",
+		OllamaDims:     768,
+		DocGenModelOvr: "",
+		ProjectsRoot:   "/projects",
+		HTTPPort:       "8080",
+		MCPName:        "doc-rag-mcp",
+		MCPVersion:     "1.0.0",
 		// Nível 2/3: vazios por default = seções omitidas no /status.
 		IndexerStatusFile: "",
 		DockerSocket:      "",
@@ -45,22 +42,20 @@ func TestLoadDefaults(t *testing.T) {
 	}
 }
 
-func TestLoadLargeModelDefaultsTo3072Dims(t *testing.T) {
+func TestDocGenModelDefaultsToLocal(t *testing.T) {
 	clearEnv(t)
-	t.Setenv("OPENAI_EMBED_MODEL", "text-embedding-3-large")
 	cfg := Load()
-	if cfg.EmbedDims != 3072 {
-		t.Fatalf("text-embedding-3-large deveria default pra 3072 dims, veio %d", cfg.EmbedDims)
+	if got := cfg.DocGenModel(); got != "qwen2.5-coder:7b" {
+		t.Fatalf("default de geração deveria ser qwen2.5-coder:7b, veio %q", got)
 	}
 }
 
-func TestLoadExplicitDimsOverridesLargeModelDefault(t *testing.T) {
+func TestDocGenModelOverrideWins(t *testing.T) {
 	clearEnv(t)
-	t.Setenv("OPENAI_EMBED_MODEL", "text-embedding-3-large")
-	t.Setenv("OPENAI_EMBED_DIMS", "999")
+	t.Setenv("DOCGEN_MODEL", "qwen3:8b")
 	cfg := Load()
-	if cfg.EmbedDims != 999 {
-		t.Fatalf("OPENAI_EMBED_DIMS explícito deveria prevalecer, veio %d", cfg.EmbedDims)
+	if got := cfg.DocGenModel(); got != "qwen3:8b" {
+		t.Fatalf("DOCGEN_MODEL deveria prevalecer, veio %q", got)
 	}
 }
 

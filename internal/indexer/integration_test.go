@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,14 +27,19 @@ import (
 // fica formalizado como teste permanente, só não roda por padrão.
 
 type fakeEmbed struct {
+	mu        sync.Mutex
 	calls     int
 	dims      int
 	failAfter int // se >0, falha a partir da (failAfter+1)-ésima chamada a Embed
 }
 
 func (f *fakeEmbed) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	f.mu.Lock()
 	f.calls++
-	if f.failAfter > 0 && f.calls > f.failAfter {
+	calls := f.calls
+	failAfter := f.failAfter
+	f.mu.Unlock()
+	if failAfter > 0 && calls > failAfter {
 		return nil, errors.New("falha simulada de embedding")
 	}
 	out := make([][]float32, len(texts))
@@ -49,6 +55,15 @@ func (f *fakeEmbed) EmbedQuery(ctx context.Context, q string) ([]float32, error)
 }
 func (f *fakeEmbed) Dims() int    { return f.dims }
 func (f *fakeEmbed) Name() string { return "fake" }
+
+// numCalls lê o contador de Embed de forma thread-safe (os workers de
+// embed rodam em paralelo; leituras fora de mutex após o retorno do Run
+// seriam um data race para o -race).
+func (f *fakeEmbed) numCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
 
 // newIntegrationQdrant pula o teste se RUN_QDRANT_INTEGRATION não estiver
 // setado, e devolve um client numa coleção descartável só desse teste
@@ -278,6 +293,13 @@ func assertPayloadIsHealthy(t *testing.T, payload map[string]any) {
 	if hash != want {
 		t.Fatalf("hash gravado não bate com sha256(content): gravado=%s esperado=%s", hash, want)
 	}
+	// body_hash/file_hash alimentam o reuso por conteúdo (itens 3+7) e o
+	// futuro source_hash do docgen — todo ponto novo precisa tê-los.
+	for _, field := range []string{"body_hash", "file_hash"} {
+		if v, ok := payload[field].(string); !ok || v == "" {
+			t.Errorf("payload sem campo string válido %q: %+v", field, payload)
+		}
+	}
 	for _, field := range []string{"project", "path", "language", "mtime", "indexed_at"} {
 		if v, ok := payload[field].(string); !ok || v == "" {
 			t.Errorf("payload sem campo string válido %q: %+v", field, payload)
@@ -323,7 +345,9 @@ func TestIntegrationPartialUpdateSelfHeals(t *testing.T) {
 		t.Fatal(err)
 	}
 	eFail := &fakeEmbed{dims: 8, failAfter: 1}
-	_, err = RunWithOptions(ctx, project, dir, q, eFail, Options{Clean: false, EmbedBatchSize: 1})
+	// Concorrência 1: a injeção de falha é ordenada (falha no 2º lote) —
+	// com workers em paralelo a ordem dos lotes não seria determinística.
+	_, err = RunWithOptions(ctx, project, dir, q, eFail, Options{Clean: false, EmbedBatchSize: 1, EmbedConcurrency: 1})
 	if err == nil {
 		t.Fatal("esperava erro propagado da falha simulada no 2º lote")
 	}
@@ -351,7 +375,10 @@ func TestIntegrationStreamingPersistsPartialProgressOnFailure(t *testing.T) {
 	}
 
 	e := &fakeEmbed{dims: 4, failAfter: 2}
-	_, err := RunWithOptions(ctx, project, dir, q, e, Options{Clean: true, EmbedBatchSize: 1})
+	// Concorrência 1: a falha determinística no 3º lote garante
+	// persistência parcial (lotes 1-2 salvos) — com paralelismo a ordem
+	// de execução dos lotes não seria determinística.
+	_, err := RunWithOptions(ctx, project, dir, q, e, Options{Clean: true, EmbedBatchSize: 1, EmbedConcurrency: 1})
 	if err == nil {
 		t.Fatal("esperava erro propagado da falha simulada")
 	}
@@ -365,5 +392,92 @@ func TestIntegrationStreamingPersistsPartialProgressOnFailure(t *testing.T) {
 	}
 	if cnt >= 5 {
 		t.Fatalf("esperava persistência PARCIAL (menos que os 5 arquivos), veio %d", cnt)
+	}
+}
+
+func TestIntegrationRenameCopiesVectorsWithoutReembed(t *testing.T) {
+	q := newIntegrationQdrant(t)
+	ctx := context.Background()
+	dir := t.TempDir()
+	e := &fakeEmbed{dims: 8}
+	project := "rename-proj"
+
+	writeFile(t, dir, "a.md", "# A\nconteudo do arquivo A para renomear\n")
+	n1, err := RunWithOptions(ctx, project, dir, q, e, Options{Clean: true})
+	if err != nil {
+		t.Fatalf("run1 (clean): %v", err)
+	}
+	if n1 != 1 {
+		t.Fatalf("setup inválido: esperava 1 chunk, veio %d", n1)
+	}
+	callsAfterRun1 := e.numCalls()
+
+	// rename preserva o conteúdo (header muda pelo path → hash cheio muda,
+	// mas o corpo é idêntico → reuso por cópia de vetor, sem reembed).
+	if err := os.Mkdir(filepath.Join(dir, "sub"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(filepath.Join(dir, "a.md"), filepath.Join(dir, "sub", "b.md")); err != nil {
+		t.Fatal(err)
+	}
+	n2, err := RunWithOptions(ctx, project, dir, q, e, Options{Clean: false})
+	if err != nil {
+		t.Fatalf("run2 (rename): %v", err)
+	}
+	if n2 != n1 {
+		t.Fatalf("total deveria continuar %d após rename, veio %d", n1, n2)
+	}
+	if got := e.numCalls(); got != callsAfterRun1 {
+		t.Fatalf("rename não deveria reembedar nada (cópia de vetor), %d chamadas novas de embed", got-callsAfterRun1)
+	}
+	if old := fetchPoints(t, ctx, q, project, "a.md"); len(old) != 0 {
+		t.Fatalf("pontos do path antigo deveriam ter sido removidos, restaram %d", len(old))
+	}
+	moved := fetchPoints(t, ctx, q, project, "sub/b.md")
+	if len(moved) != 1 {
+		t.Fatalf("esperava 1 ponto no path novo, veio %d", len(moved))
+	}
+	assertPayloadIsHealthy(t, moved[0].Payload)
+	if content, _ := moved[0].Payload["content"].(string); !strings.Contains(content, "para renomear") {
+		t.Fatalf("ponto copiado sem o conteúdo esperado: %q", content)
+	}
+	if cnt, err := q.Count(ctx); err != nil {
+		t.Fatal(err)
+	} else if cnt != int64(n2) {
+		t.Fatalf("contagem no Qdrant (%d) deveria bater com o total (%d)", cnt, n2)
+	}
+}
+
+func TestIntegrationDuplicateFileReusesVectors(t *testing.T) {
+	q := newIntegrationQdrant(t)
+	ctx := context.Background()
+	dir := t.TempDir()
+	e := &fakeEmbed{dims: 8}
+	project := "dupe-proj"
+
+	content := "# Doc\nconteudo duplicado entre arquivos\n"
+	writeFile(t, dir, "a.md", content)
+	n1, err := RunWithOptions(ctx, project, dir, q, e, Options{Clean: true})
+	if err != nil {
+		t.Fatalf("run1 (clean): %v", err)
+	}
+	callsAfterRun1 := e.numCalls()
+
+	// b.md idêntico: todos os chunks copiam vetores, zero embeds novos.
+	writeFile(t, dir, "b.md", content)
+	n2, err := RunWithOptions(ctx, project, dir, q, e, Options{Clean: false})
+	if err != nil {
+		t.Fatalf("run2 (duplicata): %v", err)
+	}
+	if n2 != 2*n1 {
+		t.Fatalf("esperava dobrar os chunks (%d → %d), veio %d", n1, 2*n1, n2)
+	}
+	if got := e.numCalls(); got != callsAfterRun1 {
+		t.Fatalf("duplicata exata não deveria reembedar nada, %d chamadas novas de embed", got-callsAfterRun1)
+	}
+	if cnt, err := q.Count(ctx); err != nil {
+		t.Fatal(err)
+	} else if cnt != int64(n2) {
+		t.Fatalf("contagem no Qdrant (%d) deveria bater com o total (%d)", cnt, n2)
 	}
 }
