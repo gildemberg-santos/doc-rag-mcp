@@ -5,6 +5,11 @@ import (
 	"strconv"
 )
 
+// buildVersion carrega o git-sha via -ldflags (o Makefile injeta;
+// vazio fora do make). Quando setado, MCP_VERSION vira "1.0.0+a1b2c3d" —
+// permite ao agente detectar binário desatualizado via index_status.
+var buildVersion string
+
 // Config centraliza todas as variáveis de ambiente do projeto.
 // Embeddings e geração são 100% locais via Ollama (sem API externa, sem key).
 type Config struct {
@@ -32,6 +37,12 @@ type Config struct {
 	// Nível 3 — série temporal: arquivo JSONL onde cada /status real
 	// anexa um sample. Vazio = só buffer em memória.
 	HistoryFile string
+	// MCP_AUTH_TOKEN protege /mcp, /search, /status e /dashboard com
+	// `Authorization: Bearer <token>`. Vazio = sem auth (rede confiável).
+	AuthToken string
+	// QDRANT_API_KEY autentica no Qdrant (`api-key`) quando o servidor
+	// foi ligado com QDRANT_API_KEY. Vazio = Qdrant aberto.
+	QdrantAPIKey string
 }
 
 func getenv(key, def string) string {
@@ -43,6 +54,10 @@ func getenv(key, def string) string {
 
 // Load lê env com defaults sensatos para Docker e local.
 func Load() Config {
+	mcpVersion := getenv("MCP_VERSION", "1.0.0")
+	if buildVersion != "" {
+		mcpVersion += "+" + buildVersion
+	}
 	return Config{
 		QdrantURL:         getenv("QDRANT_URL", "http://localhost:6333"),
 		Collection:        getenv("QDRANT_COLLECTION", "docs"),
@@ -54,11 +69,13 @@ func Load() Config {
 		ProjectsRoot:      getenv("PROJECTS_ROOT", "/projects"),
 		HTTPPort:          getenv("HTTP_PORT", "8080"),
 		MCPName:           getenv("MCP_NAME", "doc-rag-mcp"),
-		MCPVersion:        getenv("MCP_VERSION", "1.0.0"),
+		MCPVersion:        mcpVersion,
 		IndexerStatusFile: os.Getenv("INDEXER_STATUS_FILE"),
 		DockerSocket:      os.Getenv("DOCKER_SOCKET"),
 		ComposeProject:    getenv("COMPOSE_PROJECT_NAME", ""),
 		HistoryFile:       os.Getenv("STATUS_HISTORY_FILE"),
+		AuthToken:         os.Getenv("MCP_AUTH_TOKEN"),
+		QdrantAPIKey:      os.Getenv("QDRANT_API_KEY"),
 	}
 }
 

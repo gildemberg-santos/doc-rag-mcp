@@ -1,1 +1,8 @@
 bin/
+.git/
+.env
+.env.*
+*.log
+*.tmp
+backups/
+docs-geradas/

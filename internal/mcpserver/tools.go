@@ -107,6 +107,8 @@ type GrepDocsArgs struct {
 type GetDocArgs struct {
 	Project string `json:"project" jsonschema:"nome do projeto"`
 	Path    string `json:"path" jsonschema:"caminho relativo do arquivo (ex: app/models/user.rb)"`
+	Offset  int    `json:"offset,omitempty" jsonschema:"chunk inicial (padrão 0; use para paginar arquivos grandes)"`
+	Limit   int    `json:"limit,omitempty" jsonschema:"máx de chunks (padrão 0 = arquivo todo, máx 500; CHANGELOG de 192KB tem 209 chunks — pagina para não estourar contexto)"`
 }
 
 type ListDocsArgs struct {
@@ -236,18 +238,55 @@ func handleGetDocument(ctx context.Context, d *Deps, args GetDocArgs) (*mcp.Call
 		aj, _ := all[j]["chunk_index"].(float64)
 		return ai < aj
 	})
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "# %s (projeto %s, %d chunks)\n\n", args.Path, args.Project, len(all))
-	seen := map[string]bool{}
-	for _, p := range all {
-		content, _ := p["content"].(string)
-		// remove o header repetido após o primeiro chunk
-		if seen[content] {
-			continue
+	// Paginação: offset/limit sobre chunks ordenados (default = tudo, como
+	// antes). Protege o contexto do agente em arquivos grandes (ex.:
+	// CHANGELOG de 192KB = 209 chunks numa resposta só).
+	offsetArg := args.Offset
+	if offsetArg < 0 {
+		offsetArg = 0
+	}
+	limitArg := args.Limit
+	if limitArg < 0 {
+		limitArg = 0
+	}
+	if limitArg > 500 {
+		limitArg = 500
+	}
+	total := len(all)
+	if offsetArg >= total && (limitArg > 0 || offsetArg > 0) {
+		return textResult(fmt.Sprintf("Offset %d além do total (%s tem %d chunks). Use offset entre 0 e %d.", offsetArg, args.Path, total, total-1)), nil, nil
+	}
+	end := total
+	truncated := false
+	if limitArg > 0 && offsetArg < total {
+		end = offsetArg + limitArg
+		if end > total {
+			end = total
+		} else if end < total {
+			truncated = true
 		}
-		seen[content] = true
-		sb.WriteString(content)
-		sb.WriteString("\n\n---\n\n")
+	}
+	var sb strings.Builder
+	if limitArg > 0 {
+		fmt.Fprintf(&sb, "# %s (projeto %s, chunks %d–%d de %d)\n\n", args.Path, args.Project, offsetArg, end, total)
+	} else {
+		fmt.Fprintf(&sb, "# %s (projeto %s, %d chunks)\n\n", args.Path, args.Project, total)
+	}
+	seen := map[string]bool{}
+	if offsetArg < total {
+		for _, p := range all[offsetArg:end] {
+			content, _ := p["content"].(string)
+			// remove o header repetido após o primeiro chunk
+			if seen[content] {
+				continue
+			}
+			seen[content] = true
+			sb.WriteString(content)
+			sb.WriteString("\n\n---\n\n")
+		}
+	}
+	if truncated {
+		fmt.Fprintf(&sb, "\n…(resposta parcial: use offset=%d para continuar)\n", end)
 	}
 	return textResult(sb.String()), nil, nil
 }
@@ -257,7 +296,9 @@ func handleListProjects(ctx context.Context, d *Deps) (*mcp.CallToolResult, any,
 	fresh := map[string]string{} // projeto -> máx indexed_at
 	var offset any
 	for {
-		pts, next, err := d.Qdrant.Scroll(ctx, nil, 500, offset)
+		// Só os 2 campos usados (sem "content"): scroll cheio aqui
+		// transfere ~100MB no índice atual — ver ScrollFields.
+		pts, next, err := d.Qdrant.ScrollFields(ctx, nil, 1000, offset, []string{"project", "indexed_at"})
 		if err != nil {
 			return errResult(fmt.Sprintf("falha ao listar projetos: %v", err)), nil, nil
 		}
@@ -316,7 +357,9 @@ func handleListDocs(ctx context.Context, d *Deps, args ListDocsArgs) (*mcp.CallT
 	seen := map[string]string{} // path -> language
 	var offset any
 	for len(seen) < limit {
-		pts, next, err := d.Qdrant.Scroll(ctx, filter, 200, offset)
+		// Sem "content": só path+language trafegam (scroll cheio aqui
+		// transfere dezenas de MB à toa).
+		pts, next, err := d.Qdrant.ScrollFields(ctx, filter, 500, offset, []string{"path", "language"})
 		if err != nil {
 			return errResult(fmt.Sprintf("falha ao listar docs: %v", err)), nil, nil
 		}

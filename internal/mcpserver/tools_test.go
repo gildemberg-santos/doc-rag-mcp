@@ -205,6 +205,61 @@ func TestHandleGetDocumentAssemblesChunksInOrder(t *testing.T) {
 	}
 }
 
+func TestHandleGetDocumentPaginates(t *testing.T) {
+	q := newFakeQdrant(t, func(method, path string, body map[string]any) (int, any) {
+		return 200, map[string]any{"result": map[string]any{"points": []any{
+			map[string]any{"id": "1", "payload": map[string]any{"chunk_index": 0.0, "content": "parte um"}},
+			map[string]any{"id": "2", "payload": map[string]any{"chunk_index": 1.0, "content": "parte dois"}},
+			map[string]any{"id": "3", "payload": map[string]any{"chunk_index": 2.0, "content": "parte três"}},
+		}}}
+	})
+	d := &Deps{Qdrant: q}
+	res, _, err := handleGetDocument(context.Background(), d, GetDocArgs{Project: "proj", Path: "a.rb", Offset: 1, Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := resultText(t, res)
+	if strings.Contains(text, "parte um") || !strings.Contains(text, "parte dois") || strings.Contains(text, "parte três") {
+		t.Fatalf("pagina offset=1 limit=1 deveria ter só 'parte dois': %q", text)
+	}
+	if !strings.Contains(text, "chunks 1–2 de 3") || !strings.Contains(text, "offset=2") {
+		t.Fatalf("cabeçalho deveria mostrar o range e a continuação: %q", text)
+	}
+}
+
+func TestHandleGetDocumentOffsetBeyondTotal(t *testing.T) {
+	q := newFakeQdrant(t, func(method, path string, body map[string]any) (int, any) {
+		return 200, map[string]any{"result": map[string]any{"points": []any{
+			map[string]any{"id": "1", "payload": map[string]any{"chunk_index": 0.0, "content": "x"}},
+		}}}
+	})
+	d := &Deps{Qdrant: q}
+	res, _, _ := handleGetDocument(context.Background(), d, GetDocArgs{Project: "proj", Path: "a.rb", Offset: 99, Limit: 10})
+	if !strings.Contains(resultText(t, res), "além do total") {
+		t.Fatalf("offset fora do range deveria avisar: %q", resultText(t, res))
+	}
+}
+
+func TestHandleGetDocumentLimitClamped(t *testing.T) {
+	q := newFakeQdrant(t, func(method, path string, body map[string]any) (int, any) {
+		// scroll de doc não pagina no Qdrant; o clamp é client-side
+		return 200, map[string]any{"result": map[string]any{"points": []any{
+			map[string]any{"id": "1", "payload": map[string]any{"chunk_index": 0.0, "content": "x"}},
+		}}}
+	})
+	d := &Deps{Qdrant: q}
+	// limit absurdo não quebra (clamp em 500), limit negativo vira "tudo".
+	for _, lim := range []int{5000, -3} {
+		res, _, err := handleGetDocument(context.Background(), d, GetDocArgs{Project: "proj", Path: "a.rb", Limit: lim})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(resultText(t, res), "x") {
+			t.Fatalf("limit=%d deveria devolver o chunk: %q", lim, resultText(t, res))
+		}
+	}
+}
+
 // ---------- handleListProjects ----------
 
 func TestHandleListProjectsEmpty(t *testing.T) {

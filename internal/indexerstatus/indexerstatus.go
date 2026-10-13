@@ -16,6 +16,18 @@ type ProjectCycle struct {
 	Chunks     int    `json:"chunks"`
 	DurationMs int64  `json:"duration_ms"`
 	Error      string `json:"error,omitempty"`
+	// FileDocs resume a etapa opt-in de docs (nil = --generate-docs
+	// desligado ou projeto fora de --docgen-projects).
+	FileDocs *FileDocsCycle `json:"filedocs,omitempty"`
+}
+
+// FileDocsCycle resume a etapa filedocs de um projeto num ciclo.
+type FileDocsCycle struct {
+	Files     int    `json:"files"`
+	Generated int    `json:"generated"`
+	Skipped   int    `json:"skipped"`
+	Removed   int    `json:"removed"`
+	Error     string `json:"error,omitempty"`
 }
 
 // Status é o heartbeat completo de um ciclo do indexer --watch.

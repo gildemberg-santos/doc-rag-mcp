@@ -362,9 +362,21 @@ const dashboardHTML = `<!doctype html>
       ];
       var ph = '';
       if(ix.projects && ix.projects.length){
-        ph = '<table style="margin-top:12px"><thead><tr><th>Projeto</th><th>Chunks</th><th>Duração</th><th>Erro</th></tr></thead><tbody>';
+        var hasFd = ix.projects.some(function(p){ return !!p.filedocs; });
+        ph = '<table style="margin-top:12px"><thead><tr><th>Projeto</th><th>Chunks</th><th>Duração</th>' +
+          (hasFd ? '<th>Docs</th>' : '') + '<th>Erro</th></tr></thead><tbody>';
         ix.projects.forEach(function(p){
-          ph += '<tr><td>' + esc(p.project) + '</td><td class="num">' + fmt(p.chunks) + '</td><td class="num">' + esc(p.duration_ms) + 'ms</td><td class="muted">' + (p.error ? esc(p.error) : '—') + '</td></tr>';
+          var fdCell = '';
+          if(hasFd){
+            if(p.filedocs){
+              var f = p.filedocs;
+              fdCell = '<td class="num">' + fmt(f.generated) + '/' + fmt(f.files) +
+                (f.error ? ' <span class="crit-t">(erro)</span>' : '') + '</td>';
+            } else {
+              fdCell = '<td class="muted">—</td>';
+            }
+          }
+          ph += '<tr><td>' + esc(p.project) + '</td><td class="num">' + fmt(p.chunks) + '</td><td class="num">' + esc(p.duration_ms) + 'ms</td>' + fdCell + '<td class="muted">' + (p.error ? esc(p.error) : '—') + '</td></tr>';
         });
         ph += '</tbody></table>';
       }

@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"doc-rag-mcp/internal/clix"
 	"doc-rag-mcp/internal/config"
 	"doc-rag-mcp/internal/docgen"
 	"doc-rag-mcp/internal/embed"
@@ -69,7 +70,7 @@ func main() {
 
 	t0 := time.Now()
 
-	provider, err := embed.NormalizeProvider(firstNonEmpty(*providerFlag, cfg.EmbedProvider))
+	provider, err := embed.NormalizeProvider(clix.FirstNonEmpty(*providerFlag, cfg.EmbedProvider))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -113,6 +114,9 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	q := vector.New(cfg.QdrantURL, collection)
+	if cfg.QdrantAPIKey != "" {
+		q = q.WithAPIKey(cfg.QdrantAPIKey)
+	}
 
 	if *statusFile != "" {
 		if err := indexerstatus.EnsureDir(*statusFile); err != nil {
@@ -123,25 +127,8 @@ func main() {
 	// Resolve o alvo single-project uma vez (não muda entre ciclos). O modo
 	// --all redescobre projetos a cada ciclo, pra pegar pastas novas.
 	if !*all {
-		if *path == "" && *project != "" {
-			*path = indexer.ProjectDir(cfg.ProjectsRoot, *project)
-		}
-		if *path == "" {
-			*path = cfg.ProjectsRoot
-		}
-		if *project == "" {
-			// deriva do path ou usa env PROJECT_NAME
-			if env := os.Getenv("PROJECT_NAME"); env != "" {
-				*project = env
-			} else {
-				projects, _ := indexer.DiscoverProjects(*path)
-				if len(projects) == 1 {
-					*project = projects[0]
-				} else {
-					*project = "default"
-				}
-			}
-		}
+		tg := clix.ResolveTargets(cfg.ProjectsRoot, false, *project, *path)[0]
+		*project, *path = tg.Name, tg.Dir
 	}
 
 	type result struct {
@@ -160,6 +147,7 @@ func main() {
 	// --docgen-projects; no one-shot, roda sempre que --generate-docs.
 	var lastDocgen time.Time
 	runCycle := func(cycleStart time.Time) (fails int, canceled bool) {
+		docStats := map[string]*indexerstatus.FileDocsCycle{}
 		doDocs := *genDocs
 		if doDocs && *watch && !docgenDue(lastDocgen, cycleStart, *docgenInterval) {
 			doDocs = false
@@ -180,12 +168,16 @@ func main() {
 			// embed+upsert do projeto, no mesmo ciclo (Opção A do plano).
 			// Falha aqui não invalida os chunks já indexados acima.
 			if doDocs && (len(docFilter) == 0 || docFilter[p]) {
-				if derr := runFileDocs(ctx, cfg, q, e, p, dir, *docgenProviderFlag, *docgenModelFlag, *docgenConcurrency, clean, *dryRun); derr != nil {
+				fst, derr := runFileDocs(ctx, cfg, q, e, p, dir, *docgenProviderFlag, *docgenModelFlag, *docgenConcurrency, clean, *dryRun)
+				fd := &indexerstatus.FileDocsCycle{Files: fst.Files, Generated: fst.Generated, Skipped: fst.Skipped, Removed: fst.Removed}
+				if derr != nil {
 					if errors.Is(derr, context.Canceled) {
 						return false
 					}
+					fd.Error = derr.Error()
 					log.Printf("😿 [%s] filedocs FALHOU (chunks ok): %v", p, derr)
 				}
+				docStats[p] = fd
 			}
 			return true
 		}
@@ -244,6 +236,7 @@ func main() {
 				}
 				st.Projects = append(st.Projects, indexerstatus.ProjectCycle{
 					Project: r.project, Chunks: r.chunks, DurationMs: r.took.Milliseconds(), Error: errMsg,
+					FileDocs: docStats[r.project],
 				})
 			}
 			if *watch && !canceled {
@@ -281,20 +274,13 @@ func main() {
 	}
 }
 
-func firstNonEmpty(a, b string) string {
-	if a != "" {
-		return a
-	}
-	return b
-}
-
 // runFileDocs executa a etapa opt-in de documentação por arquivo de um
 // projeto (Opção A do plano): gera prosa via docgen.Provider independente e
 // persiste na coleção -filedocs com o mesmo embedder do índice principal
 // (o vetor do ponto é o embedding da doc, então precisa dos mesmos dims).
-func runFileDocs(ctx context.Context, cfg config.Config, q *vector.Client, e embed.Provider, project, dir, docgenProviderFlag, docgenModelFlag string, docgenConcurrency int, clean, dryRun bool) error {
-	if _, err := embed.NormalizeProvider(firstNonEmpty(docgenProviderFlag, firstNonEmpty(os.Getenv("DOCGEN_PROVIDER"), cfg.EmbedProvider))); err != nil {
-		return err
+func runFileDocs(ctx context.Context, cfg config.Config, q *vector.Client, e embed.Provider, project, dir, docgenProviderFlag, docgenModelFlag string, docgenConcurrency int, clean, dryRun bool) (filedocs.Stats, error) {
+	if _, err := embed.NormalizeProvider(clix.FirstNonEmpty(docgenProviderFlag, os.Getenv("DOCGEN_PROVIDER"), cfg.EmbedProvider)); err != nil {
+		return filedocs.Stats{}, err
 	}
 	model := docgenModelFlag
 	if model == "" {
@@ -307,11 +293,11 @@ func runFileDocs(ctx context.Context, cfg config.Config, q *vector.Client, e emb
 		Concurrency: docgenConcurrency, Model: model,
 	})
 	if err != nil {
-		return err
+		return st, err
 	}
 	log.Printf("📝 [%s] filedocs: %d arquivos (%d gerados, %d com doc atual, %d removidos)",
 		project, st.Files, st.Generated, st.Skipped, st.Removed)
-	return nil
+	return st, nil
 }
 
 // resolveClean decide entre reindex completo e incremental.

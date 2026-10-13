@@ -1,8 +1,15 @@
 package search
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"doc-rag-mcp/internal/embed"
+	"doc-rag-mcp/internal/vector"
 )
 
 func TestTokenize(t *testing.T) {
@@ -108,5 +115,87 @@ func TestSnippet(t *testing.T) {
 	s := snippet("linha um\n  match webhook aqui \nlinha três", "webhook")
 	if !strings.Contains(s, "webhook") {
 		t.Fatalf("snippet deveria conter o match: %q", s)
+	}
+}
+
+func TestParamsNormalizeCaps(t *testing.T) {
+	p := Params{TopK: 500, MaxPerFile: 99}
+	p.normalize()
+	if p.TopK != 50 {
+		t.Errorf("top_k deveria capar em 50, veio %d", p.TopK)
+	}
+	p = Params{}
+	p.normalize()
+	if p.TopK != 5 || p.MaxPerFile != 2 {
+		t.Errorf("defaults errados: %+v", p)
+	}
+	p = Params{PathPrefix: "/app/controllers/"}
+	p.normalize()
+	if p.PathPrefix != "app/controllers" {
+		t.Errorf("prefix deveria trimar barras: %q", p.PathPrefix)
+	}
+}
+
+func TestStrengthBoundaries(t *testing.T) {
+	if strength(0.55) != "forte" || strength(0.549) != "moderado" {
+		t.Error("fronteira 0.55 errada")
+	}
+	if strength(0.40) != "moderado" || strength(0.399) != "fraco" {
+		t.Error("fronteira 0.40 errada")
+	}
+}
+
+func TestFuseZeroKeywordFallsBackToCosine(t *testing.T) {
+	res := []Result{{Cos: 0.5, Kw: 0}, {Cos: 0.4, Kw: 0}}
+	fuse(res, false)
+	if res[0].Score != 0.5 || res[1].Score != 0.4 {
+		t.Fatalf("sem keyword, score deveria ser o cosseno: %+v", res)
+	}
+}
+
+func TestApplyDiversifyRespectsMaxPerFile(t *testing.T) {
+	mk := func(path string, score float64) Result {
+		return Result{Project: "p", Path: path, Score: score}
+	}
+	res := []Result{mk("a.rb", 0.9), mk("a.rb", 0.8), mk("a.rb", 0.7), mk("b.rb", 0.6)}
+	div := applyDiversify(res, 2)
+	if len(div) != 3 {
+		t.Fatalf("max_per_file=2 deveria dar 3, veio %d", len(div))
+	}
+}
+
+func TestRunEndToEndWithFakes(t *testing.T) {
+	embedSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"embeddings": [][]float32{{0.5, 0.5}}})
+	}))
+	defer embedSrv.Close()
+	qdrantSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"result": map[string]any{"points": []any{
+			map[string]any{"id": "1", "score": 0.9, "payload": map[string]any{
+				"project": "p", "path": "app/a.rb", "language": "rb", "content": "webhook aqui",
+			}},
+			map[string]any{"id": "2", "score": 0.8, "payload": map[string]any{
+				"project": "p", "path": "spec/b.rb", "language": "rb", "content": "nada relevante",
+			}},
+		}}})
+	}))
+	defer qdrantSrv.Close()
+
+	e := embed.NewOllama(embedSrv.URL, "m", 2)
+	q := vector.New(qdrantSrv.URL, "c")
+
+	res, err := Run(context.Background(), q, e, Params{Query: "webhook", PathPrefix: "app/"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res) != 1 || res[0].Path != "app/a.rb" {
+		t.Fatalf("prefix deveria filtrar só app/a.rb: %+v", res)
+	}
+	if res[0].Strength == "" {
+		t.Error("resultado deveria ter banda de força")
+	}
+
+	if _, err := Run(context.Background(), q, e, Params{Query: "  "}); err == nil {
+		t.Error("query vazia deveria ser erro")
 	}
 }

@@ -30,7 +30,7 @@ Opencode, Cursor, etc).
 |---|---|
 | `search_docs` | Busca semântica + keyword (`query`, `project?` csv cross-project, `top_k?` máx 50, `diversify?`, `max_per_file?`, `path_prefix?`, `language?`, `pure_vector?`) |
 | `grep_docs` | Inventário literal: todos os arquivos com o termo + ocorrências (`pattern`, `project?`, `path_prefix?`, `limit?` máx 500) |
-| `get_document` | Arquivo completo (`project`, `path`) |
+| `get_document` | Arquivo completo (`project`, `path`, `offset?`, `limit?` máx 500 — pagina arquivos grandes em vez de despejar 200KB de uma vez) |
 | `get_file_doc` | Documentação gerada por LLM de um arquivo (`project`, `path`) — com aviso de que pode conter erros |
 | `search_file_docs` | Busca semântica sobre as docs geradas (`query`, `project?`, `top_k?` máx 20, `path_prefix?`) — melhor para "o que esse módulo faz" |
 | `list_projects` | Projetos + contagem + data da última indexação |
@@ -205,6 +205,16 @@ removido — se você ainda tem um índice antigo (`docs` com 1536 dims), rode
 uma vez `indexer --all --clean` para reindexar em `docs` local e apague as
 coleções legadas (`docs-ollama*`, se existirem).
 
+> **GPU:** o Ollama do compose roda em CPU (~0,40s/lote-32 medido) contra
+> ~0,13s no Ollama do host com GPU — 3x. Para indexar mais rápido, aponte
+> `OLLAMA_URL` para o host (`http://host.docker.internal:11434` +
+> `extra_hosts: ["host.docker.internal:host-gateway"]`) ou monte o compose
+> com passthrough NVIDIA. O default (container CPU) é mais isolado e já
+> sustenta ~260 textos/s com concorrência ≥2 (medido; `--embed-concurrency`
+> acima de 4 não ajuda). Modelos ficam quentes por `OLLAMA_KEEP_ALIVE=24h`
+> (default no compose) — sem isso, a primeira chamada após 5min ociosos paga
+> reload de segundos (p50 0,01s vs picos de 2s medidos).
+
 ```bash
 # 1. sobe tudo (qdrant + ollama + server):
 docker compose up -d --build
@@ -214,6 +224,10 @@ docker compose exec ollama ollama pull qwen2.5-coder:7b   # docgen (ou: make oll
 # 3. indexa:
 docker compose run --rm indexer --all
 ```
+
+> Sem rede externa no Docker? Transfira os modelos do Ollama do host
+> (offline, mesmo formato): `make ollama-seed`
+> (`HOST_OLLAMA_MODELS=/caminho/do/host` se diferente do default).
 
 Trocar de modelo Ollama (`OLLAMA_MODEL=mxbai-embed-large`) muda os dims
 (1024) → exige reindex (`--clean`, coleção recriada automaticamente).
@@ -232,9 +246,9 @@ nada de hipótese:
 | 1 | `dims_mismatch` (modelo X dims da coleção — o bug documentado aqui vira aviso ativo) | compara `Embedder.Dims()` com `vectors.size` | — |
 | 1 | Saúde do embedding (Ollama responde + tem o modelo?) | ping barato (`/api/tags`), sem gerar embedding (cache 30s) | — |
 | 1 | Self do processo (uptime, goroutines, heap) + uso (`/mcp` contados via middleware, latência média) | `runtime` + contador atômico | — |
-| 2 | Status do `indexer --watch` (último ciclo, duração, falhas, próximo ciclo) | heartbeat JSON que o indexer grava em `INDEXER_STATUS_FILE` (volume `status_state` compartilhado) | 1 volume a mais |
+| 2 | Status do `indexer --watch` (último ciclo, duração, falhas, próximo ciclo + filedocs geradas/removidas por projeto) | heartbeat JSON que o indexer grava em `INDEXER_STATUS_FILE` (volume `status_state` compartilhado) | 1 volume a mais |
 | 3 | Containers do projeto (estado de cada um) | Docker Engine API via socket Unix (`DOCKER_SOCKET`, só `GET` de leitura) | **privilegiado**: montar o socket dá ao container acesso à API do daemon — opt-in, descomente o volume no compose |
-| 3 | Histórico (sparkline de pontos + requisições) | `GET /status/history?n=120` — 1 sample por `/status` real, em memória + JSONL (`STATUS_HISTORY_FILE`) | 1 arquivo que cresce (~1 linha por `/status` real; `tail -n` + rotação externa resolvem) |
+| 3 | Histórico (sparkline de pontos + requisições) | `GET /status/history?n=120` — 1 sample por `/status` real, em memória + JSONL (`STATUS_HISTORY_FILE`) | rotação embutida: acima de 5MB trunca pras últimas 20k linhas |
 
 Sem o volume compartilhado, a seção do indexer some (não quebra o resto).
 Sem o socket, a seção de containers some. Sem `STATUS_HISTORY_FILE`, o
@@ -252,11 +266,28 @@ curl -X PATCH localhost:6333/collections/docs \
   -d '{"optimizers_config": {"deleted_threshold": 0.1, "vacuum_min_vector_number": 500}}'
 ```
 
+## Segurança e operação
+
+- **Auth HTTP (opt-in):** `MCP_AUTH_TOKEN` exige Bearer em `/mcp`, `/search`,
+  `/status`, `/dashboard` (`/health` fica aberto p/ liveness). Sem token,
+  o server avisa no boot e serve aberto — ok em localhost, não exponha
+  `8080`/`6333` sem token.
+- **API key do Qdrant (opt-in):** com `QDRANT_API_KEY` no serviço `qdrant`
+  (descomente no compose), todos os clients precisam da mesma key
+  (`QDRANT_API_KEY` nos demais serviços — já mandam o header). Ative com
+  a stack parada e suba tudo junto, senão você mesmo se tranca pra fora.
+- **Backup:** `make backup` gera `backups/qdrant-storage-<data>.tgz`
+  (volume do Qdrant). Automatize via cron se o índice for crítico
+  (reindex cheio leva ~10min; filedocs de projetos grandes, bem mais).
+- **Versão do binário:** `make build` grava o git-sha em `index_status`
+  (`1.0.0+a1b2c3d`) — detecta server desatualizado sem adivinhar.
+
 ## Testes
 
 ```bash
 make test               # unitários, sem dependências externas (httptest fakes)
 make test-integration   # contra um Qdrant real (precisa estar rodando)
+make eval               # golden set de retrieval (recall@5) contra o server rodando
 ```
 
 Os testes de integração (`internal/indexer/integration_test.go`) só rodam
@@ -299,6 +330,7 @@ internal/httpapi   → /health + /search debug
 | `DOCGEN_ENABLED` | — | `true` liga o `--generate-docs` do indexer sem a flag |
 | `DOCGEN_INTERVAL` | `24h` | intervalo mínimo da etapa filedocs no `--watch` |
 | `DOCGEN_PROJECTS` | — | csv de projetos com docs no `--watch` (vazio = todos) |
+| `MCP_AUTH_TOKEN` | — | `Authorization: Bearer` exigido em /mcp, /search, /status, /dashboard (vazio = aberto; /health sempre aberto) |
 
 ## Documentação automática por arquivo (`cmd/docgen` + coleção `-filedocs`)
 

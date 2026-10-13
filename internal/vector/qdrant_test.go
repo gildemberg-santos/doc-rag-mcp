@@ -592,3 +592,39 @@ func TestRetrieveVectorsSkipsPointsWithoutVector(t *testing.T) {
 		t.Fatalf("ponto sem vetor deveria ser omitido, veio %+v", got)
 	}
 }
+
+func TestWithAPIKeySendsHeader(t *testing.T) {
+	var got string
+	c, _ := newFakeQdrant(t, func(w http.ResponseWriter, r *http.Request, body map[string]any) {
+		got = r.Header.Get("api-key")
+		writeJSON(w, 200, map[string]any{"result": map[string]any{"count": 1}})
+	})
+	c = c.WithAPIKey("segredo")
+	if _, err := c.Count(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got != "segredo" {
+		t.Fatalf("header api-key não enviado, veio %q", got)
+	}
+}
+
+func TestWithoutAPIKeyOmitsHeader(t *testing.T) {
+	var got string
+	c, _ := newFakeQdrant(t, func(w http.ResponseWriter, r *http.Request, body map[string]any) {
+		got = r.Header.Get("api-key")
+		writeJSON(w, 200, map[string]any{"result": map[string]any{"count": 1}})
+	})
+	if _, err := c.Count(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got != "" {
+		t.Fatalf("sem key não deveria mandar header, veio %q", got)
+	}
+}
+
+func TestWithCollectionPreservesAPIKey(t *testing.T) {
+	c := New("http://x:6333", "a").WithAPIKey("k").WithCollection("b")
+	if c.Collection != "b" || c.APIKey != "k" {
+		t.Fatalf("WithCollection deveria trocar coleção e manter key: %+v", c)
+	}
+}

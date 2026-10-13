@@ -110,10 +110,14 @@ func RunWithOptions(ctx context.Context, projectName, projectDir string, q *vect
 	if err := q.EnsureCollection(ctx, e.Dims()); err != nil {
 		return 0, fmt.Errorf("ensure collection: %w", err)
 	}
-	// Índice payload `project`: sem ele, todo scroll filtrado por projeto é
-	// full-scan no Qdrant. Best-effort — nunca falha a indexação por isso.
+	// Índices payload `project` + `path`: sem eles, todo scroll filtrado
+	// (list_docs, get_document, diff incremental) é full-scan no Qdrant.
+	// Best-effort — nunca falha a indexação por isso.
 	if err := q.EnsurePayloadIndex(ctx); err != nil {
 		log.Printf("🐾 [%s] aviso: não criou índice payload project: %v", projectName, err)
+	}
+	if err := q.EnsureKeywordIndex(ctx, "path"); err != nil {
+		log.Printf("🐾 [%s] aviso: não criou índice payload path: %v", projectName, err)
 	}
 	// Guarda de dims (item 6): trocar de modelo/dims sem recriar a coleção
 	// mistura vetores incompatíveis. Incremental aborta com instrução clara;

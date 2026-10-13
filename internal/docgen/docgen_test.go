@@ -70,7 +70,11 @@ func TestOllamaGenerateNon200IsError(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	g := NewOllama(srv.URL, "modelo-inexistente", 0, 0, 0)
-	if _, err := g.Generate(context.Background(), "x"); err == nil {
+	_, err := g.Generate(context.Background(), "x")
+	if err == nil {
 		t.Fatal("status != 200 deveria ser erro")
+	}
+	if !strings.Contains(err.Error(), "ollama pull modelo-inexistente") {
+		t.Errorf("404 deveria sugerir 'ollama pull' com o modelo: %v", err)
 	}
 }

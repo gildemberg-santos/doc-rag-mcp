@@ -10,7 +10,8 @@ func clearEnv(t *testing.T) {
 	for _, k := range []string{
 		"QDRANT_URL", "QDRANT_COLLECTION", "EMBED_PROVIDER", "OLLAMA_URL", "OLLAMA_MODEL",
 		"OLLAMA_EMBED_DIMS", "DOCGEN_MODEL", "PROJECTS_ROOT", "HTTP_PORT", "MCP_NAME", "MCP_VERSION",
-		"INDEXER_STATUS_FILE", "DOCKER_SOCKET", "COMPOSE_PROJECT_NAME", "STATUS_HISTORY_FILE",
+		"INDEXER_STATUS_FILE", "DOCKER_SOCKET", "COMPOSE_PROJECT_NAME", "STATUS_HISTORY_FILE", "MCP_AUTH_TOKEN",
+		"QDRANT_API_KEY",
 	} {
 		t.Setenv(k, "")
 	}
@@ -106,5 +107,45 @@ func TestLoadObservabilityEnv(t *testing.T) {
 	}
 	if cfg.HistoryFile != "/state/history.jsonl" {
 		t.Errorf("STATUS_HISTORY_FILE não lido: %q", cfg.HistoryFile)
+	}
+}
+
+func TestLoadAuthTokenDefaultsEmpty(t *testing.T) {
+	clearEnv(t)
+	if got := Load().AuthToken; got != "" {
+		t.Fatalf("sem env, AuthToken deveria ser vazio (auth desligada), veio %q", got)
+	}
+}
+
+func TestLoadAuthTokenFromEnv(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("MCP_AUTH_TOKEN", "segredo")
+	if got := Load().AuthToken; got != "segredo" {
+		t.Fatalf("MCP_AUTH_TOKEN não lido: %q", got)
+	}
+}
+
+func TestBuildVersionAppendedToMCPVersion(t *testing.T) {
+	clearEnv(t)
+	old := buildVersion
+	buildVersion = "a1b2c3d"
+	defer func() { buildVersion = old }()
+	if got := Load().MCPVersion; got != "1.0.0+a1b2c3d" {
+		t.Fatalf("buildVersion deveria sufixar MCP_VERSION, veio %q", got)
+	}
+}
+
+func TestLoadQdrantAPIKeyDefaultsEmpty(t *testing.T) {
+	clearEnv(t)
+	if got := Load().QdrantAPIKey; got != "" {
+		t.Fatalf("sem env, QdrantAPIKey deveria ser vazio, veio %q", got)
+	}
+}
+
+func TestLoadQdrantAPIKeyFromEnv(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("QDRANT_API_KEY", "qk")
+	if got := Load().QdrantAPIKey; got != "qk" {
+		t.Fatalf("QDRANT_API_KEY não lido: %q", got)
 	}
 }

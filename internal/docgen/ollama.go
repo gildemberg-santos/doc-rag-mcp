@@ -70,6 +70,9 @@ func (g *OllamaGenerator) Generate(ctx context.Context, prompt string) (string, 
 		return "", fmt.Errorf("ollama indisponível em %s: %w", g.BaseURL, err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return "", fmt.Errorf("ollama /api/generate falhou: status=404 model=%s não encontrado (rode: ollama pull %s)", g.Model, g.Model)
+	}
 	if resp.StatusCode != http.StatusOK {
 		var errBody map[string]any
 		_ = json.NewDecoder(resp.Body).Decode(&errBody)

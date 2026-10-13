@@ -11,27 +11,6 @@ import (
 	"doc-rag-mcp/internal/filedocs"
 )
 
-func TestOutDir(t *testing.T) {
-	if got := outDir(""); got != "stdout" {
-		t.Errorf("out vazio deveria ser stdout, veio %q", got)
-	}
-	if got := outDir("/tmp/docs"); got != "/tmp/docs" {
-		t.Errorf("out deveria passar direto, veio %q", got)
-	}
-}
-
-func TestFirstNonEmptyPrefersFlag(t *testing.T) {
-	if got := firstNonEmpty("flag", "env", "cfg"); got != "flag" {
-		t.Errorf("esperava flag, veio %q", got)
-	}
-	if got := firstNonEmpty("", "env", "cfg"); got != "env" {
-		t.Errorf("esperava env, veio %q", got)
-	}
-	if got := firstNonEmpty("", "", "cfg"); got != "cfg" {
-		t.Errorf("esperava cfg, veio %q", got)
-	}
-}
-
 // fakeGenerator implementa docgen.Provider sem chamar nenhum LLM.
 type fakeGenerator struct {
 	calls int
@@ -43,8 +22,6 @@ func (f *fakeGenerator) Generate(ctx context.Context, prompt string) (string, er
 }
 func (f *fakeGenerator) Name() string { return "fake-gen" }
 
-// TestRunMarkdownOnly gera .md sem Qdrant (Store=false): prova o caminho
-// só-markdown do docgen standalone.
 func TestRunMarkdownOnly(t *testing.T) {
 	dir := t.TempDir()
 	content := strings.Repeat("linha de conteudo relevante para documentar\n", 25)

@@ -19,11 +19,11 @@ import (
 	"os/signal"
 	"syscall"
 
+	"doc-rag-mcp/internal/clix"
 	"doc-rag-mcp/internal/config"
 	"doc-rag-mcp/internal/docgen"
 	"doc-rag-mcp/internal/embed"
 	"doc-rag-mcp/internal/filedocs"
-	"doc-rag-mcp/internal/indexer"
 	"doc-rag-mcp/internal/vector"
 
 	"github.com/joho/godotenv"
@@ -48,7 +48,7 @@ func main() {
 	concurrency := flag.Int("concurrency", 2, "gerações em paralelo (completions são pesadas; default 2)")
 	flag.Parse()
 
-	provider, err := embed.NormalizeProvider(firstNonEmpty(*providerFlag, os.Getenv("DOCGEN_PROVIDER"), cfg.EmbedProvider))
+	provider, err := embed.NormalizeProvider(clix.FirstNonEmpty(*providerFlag, os.Getenv("DOCGEN_PROVIDER"), cfg.EmbedProvider))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -67,33 +67,36 @@ func main() {
 	var e embed.Provider
 	var qDocs *vector.Client
 	if *store {
-		if _, err := embed.NormalizeProvider(firstNonEmpty(*embedProviderFlag, cfg.EmbedProvider, "")); err != nil {
+		if _, err := embed.NormalizeProvider(clix.FirstNonEmpty(*embedProviderFlag, cfg.EmbedProvider)); err != nil {
 			log.Fatal(err)
 		}
 		base := cfg.Collection
 		e = embed.NewOllama(cfg.OllamaURL, cfg.OllamaModel, cfg.OllamaDims)
 		qDocs = vector.New(cfg.QdrantURL, filedocs.CollectionFor(base))
+		if cfg.QdrantAPIKey != "" {
+			qDocs = qDocs.WithAPIKey(cfg.QdrantAPIKey)
+		}
 	}
-	fmt.Printf("📝 doc-rag docgen — geração=%s (%s) — saída: %s — store=%v\n", provider, model, outDir(*out), *store)
+	fmt.Printf("📝 doc-rag docgen — geração=%s (%s) — saída: %s — store=%v\n", provider, model, clix.OutDirLabel(*out), *store)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	targets := resolveTargets(cfg, *all, *project, *path)
+	targets := clix.ResolveTargets(cfg.ProjectsRoot, *all, *project, *path)
 	if len(targets) == 0 {
 		log.Fatal("nenhum projeto para documentar (use --project/--path ou --all)")
 	}
 
 	var failed, doneFiles, doneDocs int
 	for _, tg := range targets {
-		st, err := filedocs.Run(ctx, tg.name, tg.dir, qDocs, e, g, filedocs.Options{
+		st, err := filedocs.Run(ctx, tg.Name, tg.Dir, qDocs, e, g, filedocs.Options{
 			Clean: *clean, DryRun: *dryRun, Store: *store,
 			OutDir: *out, PrintStdout: *out == "",
 			MaxBytes: *maxBytes, MinLines: *minLines,
 			Concurrency: *concurrency, Model: model,
 		})
 		if err != nil {
-			log.Printf("😿 [%s]: %v", tg.name, err)
+			log.Printf("😿 [%s]: %v", tg.Name, err)
 			failed++
 			continue
 		}
@@ -104,58 +107,4 @@ func main() {
 	if failed > 0 {
 		os.Exit(1)
 	}
-}
-
-type target struct {
-	name string
-	dir  string
-}
-
-func outDir(out string) string {
-	if out == "" {
-		return "stdout"
-	}
-	return out
-}
-
-// resolveTargets espelha a resolução do indexer: --all redescobre a cada
-// execução; single-project deriva path de PROJECTS_ROOT.
-func resolveTargets(cfg config.Config, all bool, project, path string) []target {
-	if all {
-		projects, err := indexer.DiscoverProjects(cfg.ProjectsRoot)
-		if err != nil {
-			log.Fatalf("discover: %v", err)
-		}
-		var out []target
-		for _, p := range projects {
-			out = append(out, target{name: p, dir: indexer.ProjectDir(cfg.ProjectsRoot, p)})
-		}
-		return out
-	}
-	if path == "" && project != "" {
-		path = indexer.ProjectDir(cfg.ProjectsRoot, project)
-	}
-	if path == "" {
-		path = cfg.ProjectsRoot
-	}
-	if project == "" {
-		if env := os.Getenv("PROJECT_NAME"); env != "" {
-			project = env
-		} else if projects, _ := indexer.DiscoverProjects(path); len(projects) == 1 {
-			project = projects[0]
-		} else {
-			project = "default"
-		}
-	}
-	return []target{{name: project, dir: path}}
-}
-
-func firstNonEmpty(a, b, c string) string {
-	if a != "" {
-		return a
-	}
-	if b != "" {
-		return b
-	}
-	return c
 }

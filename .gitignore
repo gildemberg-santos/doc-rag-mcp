@@ -1,4 +1,5 @@
 bin/
 .env
 qdrant_storage/
+backups/
 *.test

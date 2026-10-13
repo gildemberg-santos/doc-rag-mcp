@@ -66,7 +66,11 @@ outer:
 		}
 		var offset any
 		for {
-			pts, next, err := q.Scroll(ctx, filter, 500, offset)
+			// Páginas de 1000 (eram 500): o grep varre a coleção inteira,
+			// metade dos roundtrips. Content vem junto por necessidade
+			// (match literal client-side) — escopar por project/path_prefix
+			// reduz o volume.
+			pts, next, err := q.Scroll(ctx, filter, 1000, offset)
 			if err != nil {
 				return nil, false, err
 			}

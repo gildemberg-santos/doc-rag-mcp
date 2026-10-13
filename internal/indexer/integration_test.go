@@ -16,15 +16,16 @@ import (
 	"doc-rag-mcp/internal/vector"
 )
 
-// Testes de integração contra um Qdrant real — não rodam no `go test ./...`
-// normal. Pra rodar: suba um Qdrant (ex. `docker compose up -d qdrant`) e
-// chame `make test-integration` (ou RUN_QDRANT_INTEGRATION=1 go test ./internal/indexer/... -run Integration -v).
+// Testes de integração contra um Qdrant real — rodam automaticamente em
+// `go test ./...` quando há um Qdrant acessível (QDRANT_URL ou
+// localhost:6333), e pulam (Skip) onde não há. `make test-integration`
+// força com RUN_QDRANT_INTEGRATION=1.
 //
 // Cobrem o que só dá pra validar com um Qdrant de verdade: diff incremental
 // por hash/mtime, streaming com persistência parcial, e o "self-heal" de
 // uma atualização interrompida no meio — tudo isso foi validado manualmente
 // em sessões anteriores (escrevendo e apagando o teste a cada vez); aqui
-// fica formalizado como teste permanente, só não roda por padrão.
+// fica formalizado como teste permanente.
 
 type fakeEmbed struct {
 	mu        sync.Mutex
@@ -65,17 +66,19 @@ func (f *fakeEmbed) numCalls() int {
 	return f.calls
 }
 
-// newIntegrationQdrant pula o teste se RUN_QDRANT_INTEGRATION não estiver
-// setado, e devolve um client numa coleção descartável só desse teste
-// (apagada no cleanup).
+// newIntegrationQdrant devolve um client numa coleção descartável só desse
+// teste (apagada no cleanup). Roda quando RUN_QDRANT_INTEGRATION=1 ou quando
+// um Qdrant responde em QDRANT_URL (default localhost:6333) — ou seja, `go
+// test ./...` já cobre a integração em dev local/CI com Qdrant, e pula
+// (Skip, não falha) onde não há Qdrant.
 func newIntegrationQdrant(t *testing.T) *vector.Client {
 	t.Helper()
-	if os.Getenv("RUN_QDRANT_INTEGRATION") == "" {
-		t.Skip("defina RUN_QDRANT_INTEGRATION=1 (com um Qdrant local acessível) para rodar testes de integração")
-	}
 	url := os.Getenv("QDRANT_URL")
 	if url == "" {
 		url = "http://localhost:6333"
+	}
+	if os.Getenv("RUN_QDRANT_INTEGRATION") == "" && !qdrantReachable(url) {
+		t.Skip("sem Qdrant acessível (suba com `docker compose up -d qdrant` ou defina RUN_QDRANT_INTEGRATION=1)")
 	}
 	collection := "indexer_integration_" + sanitize(t.Name())
 	c := vector.New(url, collection)
@@ -100,6 +103,18 @@ func sanitize(name string) string {
 		}
 	}
 	return string(out)
+}
+
+// qdrantReachable sonda /collections com timeout curto — decide se a
+// integração roda ou pula, sem exigir a env flag.
+func qdrantReachable(url string) bool {
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get(strings.TrimRight(url, "/") + "/collections")
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode < 500
 }
 
 func writeFile(t *testing.T, dir, name, content string) string {

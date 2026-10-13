@@ -1,13 +1,30 @@
+# Ancora de logging: json-file com rotação (default do driver é ilimitado —
+# um ciclo de reindex gera ~100KB de log; watch a cada 10min sem teto enche disco).
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 services:
   qdrant:
-    image: qdrant/qdrant:latest
+    # Pin por digest (imutável; verificado ao vivo: Qdrant 1.19.2).
+    # Sem rede externa o daemon não resolve tags novas — digest local sempre funciona.
+    image: qdrant/qdrant@sha256:b7b0444c4c351c970b98e90a6f89c2ee4287c65b44e52b4cb503fa5b2aa927ad
     container_name: doc-rag-qdrant
     ports:
       - "6333:6333"
       - "6334:6334"
+    # API key (opt-in): com QDRANT_API_KEY setado, TODOS os clients precisam
+    # de QDRANT_API_KEY igual (server/indexer/docgen já mandam o header).
+    # ATENÇÃO: ativar tranca o acesso atual sem key — faça com a stack
+    # parada e reinicie tudo junto. Sem key = aberto (rede confiável).
+    #environment:
+    #  - QDRANT_API_KEY=${QDRANT_API_KEY:-}
     volumes:
       - qdrant_storage:/qdrant/storage
     restart: unless-stopped
+    logging: *default-logging
 
   # Embeddings e geração 100% locais (serviço obrigatório — o provider
   # OpenAI foi removido). Após subir: docker compose exec ollama ollama pull
@@ -15,11 +32,25 @@ services:
   # Sem ports: fala só na rede interna (evita conflito com ollama do host).
   # GPU: desça um `deploy.resources.reservations` com nvidia se o host tiver.
   ollama:
-    image: ollama/ollama:latest
+    # Pin por digest (imutável; verificado ao vivo: Ollama 0.35.1).
+    image: ollama/ollama@sha256:292ee7945dfc3d5840a181f3ab86fedb1e66703e02c8af98b50f4da56b7e278c
     container_name: doc-rag-ollama
+    environment:
+      # Modelos descarregam após 5min ociosos por default (primeira chamada
+      # depois paga reload de segundos). 24h mantém quente em uso diário.
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-24h}
     volumes:
       - ollama_data:/root/.ollama
     restart: unless-stopped
+    logging: *default-logging
+    # Sem curl/wget na imagem: healthcheck via a própria CLI (fala com o
+    # server; exit != 0 enquanto não responde).
+    healthcheck:
+      test: ["CMD", "ollama", "ps"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
 
   mcp-server:
     build: .
@@ -32,6 +63,7 @@ services:
       EMBED_PROVIDER: ${EMBED_PROVIDER:-ollama}
       OLLAMA_URL: http://ollama:11434
       OLLAMA_MODEL: ${OLLAMA_MODEL:-nomic-embed-text}
+      # QDRANT_API_KEY: ${QDRANT_API_KEY:-}  # só se ativado no qdrant (ver acima)
       PROJECTS_ROOT: /projects
       HTTP_PORT: "8080"
       # Nível 2 — heartbeat do indexer --watch (volume compartilhado).
@@ -55,6 +87,7 @@ services:
       - qdrant
       - ollama
     restart: unless-stopped
+    logging: *default-logging
     command: ["--transport", "http", "--http-addr", ":8080"]
 
   # Indexador one-shot (incremental por padrão — só o diff):
@@ -72,6 +105,7 @@ services:
       EMBED_PROVIDER: ${EMBED_PROVIDER:-ollama}
       OLLAMA_URL: http://ollama:11434
       OLLAMA_MODEL: ${OLLAMA_MODEL:-nomic-embed-text}
+      # QDRANT_API_KEY: ${QDRANT_API_KEY:-}  # só se ativado no qdrant (ver acima)
       DOCGEN_PROVIDER: ${DOCGEN_PROVIDER:-}
       DOCGEN_MODEL: ${DOCGEN_MODEL:-}
       DOCGEN_ENABLED: ${DOCGEN_ENABLED:-}
@@ -86,8 +120,11 @@ services:
       - .:/projects/doc-rag-mcp:ro
       - status_state:/state
     depends_on:
-      - qdrant
-      - ollama
+      qdrant:
+        condition: service_started
+      ollama:
+        condition: service_healthy
+    logging: *default-logging
     profiles: ["tools"]
 
   # Gerador de documentação por arquivo (coleção -filedocs + .md opcional):
@@ -102,6 +139,7 @@ services:
       EMBED_PROVIDER: ${EMBED_PROVIDER:-ollama}
       OLLAMA_URL: http://ollama:11434
       OLLAMA_MODEL: ${OLLAMA_MODEL:-nomic-embed-text}
+      # QDRANT_API_KEY: ${QDRANT_API_KEY:-}  # só se ativado no qdrant (ver acima)
       DOCGEN_PROVIDER: ${DOCGEN_PROVIDER:-}
       DOCGEN_MODEL: ${DOCGEN_MODEL:-}
       PROJECTS_ROOT: /projects
@@ -111,8 +149,11 @@ services:
       - ../atendimento:/projects/atendimento:ro
       - .:/projects/doc-rag-mcp:ro
     depends_on:
-      - qdrant
-      - ollama
+      qdrant:
+        condition: service_started
+      ollama:
+        condition: service_healthy
+    logging: *default-logging
     profiles: ["tools"]
 
   # Indexador contínuo: reindexação incremental a cada REINDEX_INTERVAL,
@@ -130,6 +171,7 @@ services:
       EMBED_PROVIDER: ${EMBED_PROVIDER:-ollama}
       OLLAMA_URL: http://ollama:11434
       OLLAMA_MODEL: ${OLLAMA_MODEL:-nomic-embed-text}
+      # QDRANT_API_KEY: ${QDRANT_API_KEY:-}  # só se ativado no qdrant (ver acima)
       DOCGEN_PROVIDER: ${DOCGEN_PROVIDER:-}
       DOCGEN_MODEL: ${DOCGEN_MODEL:-}
       DOCGEN_ENABLED: ${DOCGEN_ENABLED:-}
@@ -144,8 +186,11 @@ services:
       - .:/projects/doc-rag-mcp:ro
       - status_state:/state
     depends_on:
-      - qdrant
-      - ollama
+      qdrant:
+        condition: service_started
+      ollama:
+        condition: service_healthy
+    logging: *default-logging
     profiles: ["watch"]
     restart: unless-stopped
     command: ["--all", "--watch", "--interval", "${REINDEX_INTERVAL:-10m}"]

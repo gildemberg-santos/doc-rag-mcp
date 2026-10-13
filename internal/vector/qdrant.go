@@ -17,6 +17,9 @@ type Client struct {
 	BaseURL    string
 	Collection string
 	HTTP       *http.Client
+	// APIKey, quando não-vazia, vai no header `api-key` (Qdrant com
+	// QDRANT_API_KEY configurado recusa tudo sem ela — ver WithAPIKey).
+	APIKey string
 }
 
 func New(baseURL, collection string) *Client {
@@ -25,6 +28,14 @@ func New(baseURL, collection string) *Client {
 		Collection: collection,
 		HTTP:       &http.Client{Timeout: 30 * time.Second},
 	}
+}
+
+// WithAPIKey deriva um cliente autenticado (mesma conexão/coleção).
+// Sem key, o comportamento é o atual (Qdrant aberto, rede confiável).
+func (c *Client) WithAPIKey(key string) *Client {
+	cp := *c
+	cp.APIKey = key
+	return &cp
 }
 
 func (c *Client) do(ctx context.Context, method, path string, payload any, out any) (int, error) {
@@ -41,6 +52,9 @@ func (c *Client) do(ctx context.Context, method, path string, payload any, out a
 		return 0, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if c.APIKey != "" {
+		req.Header.Set("api-key", c.APIKey)
+	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return 0, err
@@ -126,9 +140,11 @@ func (c *Client) EnsureKeywordIndex(ctx context.Context, field string) error {
 
 // WithCollection deriva um cliente para outra coleção no mesmo Qdrant
 // (ex.: a coleção "-filedocs" de documentação gerada) — reaproveita
-// BaseURL e o HTTP client já configurado.
+// BaseURL, HTTP client e APIKey já configurados.
 func (c *Client) WithCollection(collection string) *Client {
-	return &Client{BaseURL: c.BaseURL, Collection: collection, HTTP: c.HTTP}
+	cp := *c
+	cp.Collection = collection
+	return &cp
 }
 
 // Point representa um chunk indexado.

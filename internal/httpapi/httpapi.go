@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"net/http"
 	"runtime"
@@ -29,6 +30,8 @@ type Handler struct {
 	// ServerName/ServerVersion identificam o binário no /status.
 	ServerName    string
 	ServerVersion string
+	// AuthToken protege as rotas via RequireAuth (vazio = sem auth).
+	AuthToken string
 
 	// IndexerStatusFile, se setado, é lido em todo /status — heartbeat que
 	// o indexer --watch grava após cada ciclo (ver internal/indexerstatus).
@@ -80,6 +83,26 @@ func Metrics(h *Handler, next http.Handler) http.Handler {
 		t0 := time.Now()
 		next.ServeHTTP(w, r)
 		h.TrackRequest(time.Since(t0))
+	})
+}
+
+// RequireAuth protege rotas com `Authorization: Bearer <token>` quando
+// AuthToken está configurado (comparação em tempo constante). Sem token
+// configurado, tudo passa (comportamento atual, rede confiável).
+// /health nunca é protegido (liveness pra orquestrador/load balancer).
+func RequireAuth(h *Handler, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" || h.AuthToken == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		want := "Bearer " + h.AuthToken
+		if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte(want)) != 1 {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="doc-rag-mcp"`)
+			http.Error(w, "não autorizado (configure MCP_AUTH_TOKEN no client)", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
 	})
 }
 
@@ -488,7 +511,7 @@ func (h *Handler) Search(w http.ResponseWriter, r *http.Request) {
 	}
 	diversify := r.URL.Query().Get("diversify") != "0"
 	pure := r.URL.Query().Get("pure_vector") == "1" || r.URL.Query().Get("raw") == "1"
-	hits, err := search.Run(context.Background(), h.Qdrant, h.Embedder, search.Params{
+	hits, err := search.Run(r.Context(), h.Qdrant, h.Embedder, search.Params{
 		Query:      q,
 		Projects:   search.ParseProjects(r.URL.Query().Get("project")),
 		TopK:       k,

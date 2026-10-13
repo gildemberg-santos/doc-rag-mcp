@@ -9,7 +9,9 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
+	"doc-rag-mcp/internal/clix"
 	"doc-rag-mcp/internal/config"
 	"doc-rag-mcp/internal/dockerstat"
 	"doc-rag-mcp/internal/embed"
@@ -36,7 +38,7 @@ func main() {
 		*httpAddr = ":" + cfg.HTTPPort
 	}
 
-	provider, err := embed.NormalizeProvider(firstNonEmpty(*providerFlag, cfg.EmbedProvider))
+	provider, err := embed.NormalizeProvider(clix.FirstNonEmpty(*providerFlag, cfg.EmbedProvider))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -44,7 +46,17 @@ func main() {
 
 	e := embed.NewOllama(cfg.OllamaURL, cfg.OllamaModel, cfg.OllamaDims)
 	q := vector.New(cfg.QdrantURL, collection)
+	if cfg.QdrantAPIKey != "" {
+		q = q.WithAPIKey(cfg.QdrantAPIKey)
+	}
 	log.Printf("[%s] provider=%s (%s) coleção=%q dims=%d", cfg.MCPName, provider, cfg.OllamaModel, collection, e.Dims())
+
+	// Checagem de dependências no boot (não-fatal): Qdrant fora ou modelo
+	// ausente no Ollama só quebrariam na primeira busca com erro genérico.
+	// Aqui o aviso já diz o comando exato de correção.
+	for _, w := range checkDependencies(context.Background(), q, e, cfg) {
+		log.Printf("⚠️ %s", w)
+	}
 
 	// Coleção de documentação gerada (best-effort): se o Qdrant estiver
 	// vazio de filedocs, as tools get_file_doc/search_file_docs avisam em
@@ -81,11 +93,23 @@ func main() {
 	}
 }
 
-func firstNonEmpty(a, b string) string {
-	if a != "" {
-		return a
+// checkDependencies pinga Qdrant (count barato) e o Ollama (modelos)
+// com timeout curto e devolve avisos acionáveis. Não-fatal de propósito:
+// com restart-unless-stopped + ollama ainda subindo, falhar aqui seria
+// crashloop; os erros reais continuam nas tools com 502.
+func checkDependencies(ctx context.Context, q *vector.Client, e embed.Provider, cfg config.Config) []string {
+	var warns []string
+	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if _, err := q.Count(pingCtx); err != nil {
+		warns = append(warns, fmt.Sprintf("qdrant inacessível em %s: %v (suba com: docker compose up -d qdrant)", cfg.QdrantURL, err))
 	}
-	return b
+	if pinger, ok := e.(embed.Pinger); ok {
+		if err := pinger.Ping(pingCtx); err != nil {
+			warns = append(warns, fmt.Sprintf("embedding indisponível: %v (confira OLLAMA_URL=%s e rode: ollama pull %s)", err, cfg.OllamaURL, cfg.OllamaModel))
+		}
+	}
+	return warns
 }
 
 func runHTTP(ctx context.Context, addr string, srv *mcp.Server, q *vector.Client, fileDocs *vector.Client, e embed.Provider, cfg config.Config) error {
@@ -96,6 +120,10 @@ func runHTTP(ctx context.Context, addr string, srv *mcp.Server, q *vector.Client
 	aux.FileDocs = fileDocs
 	aux.ServerName = cfg.MCPName
 	aux.ServerVersion = cfg.MCPVersion
+	aux.AuthToken = cfg.AuthToken
+	if cfg.AuthToken == "" {
+		log.Printf("aviso: MCP_AUTH_TOKEN vazio — /mcp, /search, /status e /dashboard sem autenticação (ok em rede confiável/localhost)")
+	}
 	aux.IndexerStatusFile = cfg.IndexerStatusFile
 	aux.History = history.New(cfg.HistoryFile)
 	if cfg.DockerSocket != "" {
@@ -121,7 +149,7 @@ func runHTTP(ctx context.Context, addr string, srv *mcp.Server, q *vector.Client
 	mux.HandleFunc("/status/history", aux.HistoryHandler)
 	mux.HandleFunc("/dashboard", aux.Dashboard)
 
-	httpSrv := &http.Server{Addr: addr, Handler: mux}
+	httpSrv := &http.Server{Addr: addr, Handler: httpapi.RequireAuth(aux, mux)}
 	go func() {
 		<-ctx.Done()
 		_ = httpSrv.Shutdown(context.Background())

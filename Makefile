@@ -1,4 +1,7 @@
-.PHONY: tidy build test test-integration run-http run-stdio index index-all docker-up docker-index docker-logs qdrant-ui ollama-pull docker-watch verify
+.PHONY: tidy build test test-integration run-http run-stdio index index-all docker-up docker-index docker-logs qdrant-ui ollama-pull ollama-seed docker-watch verify backup eval
+
+VERSION := $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
+LDFLAGS := -X doc-rag-mcp/internal/config.buildVersion=$(VERSION)
 
 tidy:
 	go mod tidy
@@ -6,16 +9,33 @@ tidy:
 test:
 	go test ./...
 
-# Testes de integração contra um Qdrant real (precisa estar rodando, ex.:
-# docker compose up -d qdrant). Não entram no `make test`/`go test ./...`
-# normal — usam coleções descartáveis próprias, limpas ao final.
+# Testes de integração (Qdrant real) rodam junto com `make test` quando há
+# Qdrant acessível; este alvo força com coleções descartáveis próprias.
 test-integration:
 	RUN_QDRANT_INTEGRATION=1 QDRANT_URL=$${QDRANT_URL:-http://localhost:6333} go test ./internal/indexer/... -run Integration -v
 
 build:
-	go build -o bin/mcp-server ./cmd/server
-	go build -o bin/mcp-indexer ./cmd/indexer
-	go build -o bin/mcp-docgen ./cmd/docgen
+	go build -ldflags "$(LDFLAGS)" -o bin/mcp-server ./cmd/server
+	go build -ldflags "$(LDFLAGS)" -o bin/mcp-indexer ./cmd/indexer
+	go build -ldflags "$(LDFLAGS)" -o bin/mcp-docgen ./cmd/docgen
+
+# Copia os modelos do Ollama do host para o volume do compose (offline —
+# o container pode não ter rede externa). Precisa do path do host
+# (default: /usr/share/ollama/.ollama/models, usuário `ollama`).
+ollama-seed:
+	docker run --rm -v doc-rag-mcp_ollama_data:/dest -v $${HOST_OLLAMA_MODELS:-/usr/share/ollama/.ollama/models}:/src:ro alpine sh -c 'mkdir -p /dest/models && cp -rn /src/manifests /dest/models/manifests 2>/dev/null; cp -rn /src/blobs /dest/models/blobs 2>/dev/null; echo "modelos copiados — confira com: docker exec doc-rag-ollama ollama list"'
+
+# Golden set de retrieval (recall@5): detecta regressão em troca de
+# modelo/pesos. Precisa do server rodando (default localhost:8080).
+eval:
+	SERVER=$${SERVER:-http://localhost:8080} ./scripts/eval.sh
+
+# Snapshot do volume do Qdrant (rollback de migrações). Guarda em
+# ./backups/ com timestamp. Automatize via cron se o índice for crítico.
+backup:
+	mkdir -p backups
+	docker run --rm -v doc-rag-mcp_qdrant_storage:/data -v ./backups:/backup alpine tar czf /backup/qdrant-storage-$$(date +%F-%H%M).tgz -C /data .
+	@echo "backup em $$(ls -t backups/qdrant-storage-*.tgz | head -n 1)"
 
 run-http: build
 	QDRANT_URL=$${QDRANT_URL:-http://localhost:6333} ./bin/mcp-server --transport http --http-addr :$${HTTP_PORT:-8080}

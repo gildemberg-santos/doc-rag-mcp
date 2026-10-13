@@ -262,7 +262,9 @@ Projeto: %s | Arquivo: %s
 }
 
 // generateWithRetry executa uma completion com até 3 tentativas (backoff
-// 500ms*tentativa). Desiste de imediato com contexto cancelado.
+// 500ms*tentativa). Desiste de imediato com contexto cancelado e com modelo
+// ausente (status=404 — retry não baixa modelo; cada tentativa custa uma
+// geração inteira).
 func generateWithRetry(ctx context.Context, g docgen.Provider, prompt string) (string, error) {
 	var err error
 	var doc string
@@ -276,6 +278,9 @@ func generateWithRetry(ctx context.Context, g docgen.Provider, prompt string) (s
 		if ctx.Err() != nil {
 			return "", err
 		}
+		if isModelNotFound(err) {
+			return "", err
+		}
 		if attempt < 3 {
 			select {
 			case <-ctx.Done():
@@ -285,6 +290,11 @@ func generateWithRetry(ctx context.Context, g docgen.Provider, prompt string) (s
 		}
 	}
 	return "", err
+}
+
+// isModelNotFound detecta "modelo não baixado" (Ollama 404): sem retry.
+func isModelNotFound(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "status=404")
 }
 
 // Run gera a documentação dos arquivos de um projeto e persiste na coleção

@@ -9,9 +9,9 @@
 //   - arquivo JSONL (HistoryFile != ""): cada sample é uma linha JSON
 //     (append atômico O_APPEND). Sobrevive a restart, dá pra inspecionar
 //     com `tail`, e o endpoint faz tail das últimas N linhas sem carregar
-//     o arquivo inteiro. Sem rotação automática — documentado no README
-//     (o arquivo cresce ~1 linha por /status real, ~17k linhas/dia no
-//     pior caso com refresh de 5s; `tail -n` + cron resolve).
+//     o arquivo inteiro. Rotação embutida: acima de 5MB o Append
+//     trunca para as últimas 20k linhas (rewrite atômico) — sem cron,
+//     sem crescimento infinito (~3MB/dia por aba de dashboard).
 package history
 
 import (
@@ -43,6 +43,16 @@ type Recorder struct {
 	filePath string
 }
 
+// Rotação embutida do JSONL: soft-cap de ~5MB (~26k linhas de ~190B),
+// truncado para as últimas keepHistoryLines (~3.8MB). Sem isso o arquivo
+// cresce ~3MB/dia por aba de dashboard e o tail de /status/history
+// degrada junto (leitura O(n) do arquivo inteiro a cada chamada).
+// Vars (não const) para o teste exercitar o gatilho sem escrever 5MB.
+var (
+	maxHistoryBytes  = int64(5 << 20)
+	keepHistoryLines = 20000
+)
+
 // New cria um Recorder. filePath vazio = só memória.
 func New(filePath string) *Recorder {
 	return &Recorder{memCap: 720, filePath: filePath} // 720 = 1h a cada 5s
@@ -50,7 +60,9 @@ func New(filePath string) *Recorder {
 
 // Append registra um sample (memória sempre; arquivo se configurado).
 // Erro de arquivo é ignorado de propósito: histórico nunca pode quebrar
-// o /status — é observabilidade best-effort.
+// o /status — é observabilidade best-effort. A cada append com arquivo,
+// confere o tamanho e trunca para as últimas keepHistoryLines linhas
+// quando passar de maxHistoryBytes (rotação embutida — sem cron).
 func (r *Recorder) Append(s Sample) {
 	if s.Timestamp == "" {
 		s.Timestamp = time.Now().UTC().Format(time.RFC3339)
@@ -70,8 +82,38 @@ func (r *Recorder) Append(s Sample) {
 	if err != nil {
 		return
 	}
-	defer f.Close()
 	_ = json.NewEncoder(f).Encode(s)
+	_ = f.Close()
+	// Rotação best-effort (fora do lock): 1 stat por append é irrelevante
+	// perto das ~117 reqs Qdrant de um /status frio.
+	if st, err := os.Stat(path); err == nil && st.Size() > maxHistoryBytes {
+		_ = trimHistoryFile(path, keepHistoryLines)
+	}
+}
+
+// trimHistoryFile reescreve o JSONL com as últimas keep linhas (atômico via
+// tmp+rename — leitores concorrentes nunca pegam arquivo pela metade).
+func trimHistoryFile(path string, keep int) error {
+	samples, err := tailJSONL(path, keep)
+	if err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	enc := json.NewEncoder(f)
+	for _, s := range samples {
+		if err := enc.Encode(s); err != nil {
+			_ = f.Close()
+			return err
+		}
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // Last devolve até n samples mais recentes (memória + arquivo).

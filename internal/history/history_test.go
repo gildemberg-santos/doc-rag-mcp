@@ -67,3 +67,47 @@ func TestMissingFileFallsBackToMemory(t *testing.T) {
 		t.Fatalf("sem arquivo, deveria cair pro buffer em memória: %+v", got)
 	}
 }
+
+func TestTrimHistoryFileKeepsLastLines(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "h.jsonl")
+	r := New(path)
+	for i := int64(1); i <= 10; i++ {
+		r.Append(Sample{Points: i})
+	}
+	if err := trimHistoryFile(path, 4); err != nil {
+		t.Fatal(err)
+	}
+	got := r.Last(10)
+	if len(got) != 4 || got[0].Points != 7 || got[3].Points != 10 {
+		t.Fatalf("trim deveria deixar só os 4 últimos: %+v", got)
+	}
+}
+
+func TestTrimHistoryFileMissingFileIsError(t *testing.T) {
+	if err := trimHistoryFile(filepath.Join(t.TempDir(), "nao-existe.jsonl"), 10); err == nil {
+		t.Fatal("arquivo ausente deveria ser erro (Append ignora, mas trim direto reporta)")
+	}
+}
+
+func TestAppendRotatesWhenOverCap(t *testing.T) {
+	oldMax, oldKeep := maxHistoryBytes, keepHistoryLines
+	maxHistoryBytes, keepHistoryLines = 600, 3
+	defer func() { maxHistoryBytes, keepHistoryLines = oldMax, oldKeep }()
+
+	path := filepath.Join(t.TempDir(), "h.jsonl")
+	r := New(path)
+	for i := int64(1); i <= 10; i++ {
+		r.Append(Sample{Points: i})
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if int64(len(data)) > 1500 {
+		t.Fatalf("arquivo deveria ter sido truncado perto do cap, tem %d bytes", len(data))
+	}
+	got := r.Last(100)
+	if len(got) == 0 || got[len(got)-1].Points != 10 {
+		t.Fatalf("último sample deveria sobreviver à rotação: %+v", got)
+	}
+}

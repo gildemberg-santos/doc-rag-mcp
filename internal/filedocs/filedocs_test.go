@@ -364,3 +364,41 @@ func TestListCandidatesSkipsTinyFiles(t *testing.T) {
 		t.Fatalf("esperava só grande.md, veio %+v", got)
 	}
 }
+
+func TestIsModelNotFound(t *testing.T) {
+	if !isModelNotFound(errTest("status=404 model=x")) {
+		t.Error("status=404 deveria ser modelo ausente")
+	}
+	if isModelNotFound(errTest("ollama indisponível")) {
+		t.Error("erro de conexão deveria ter retry")
+	}
+	if isModelNotFound(nil) {
+		t.Error("nil não é modelo ausente")
+	}
+}
+
+type errTest string
+
+func (e errTest) Error() string { return string(e) }
+
+// missingModelGenerator simula Ollama sem o modelo (404 sempre).
+type missingModelGenerator struct {
+	calls int
+}
+
+func (f *missingModelGenerator) Generate(ctx context.Context, prompt string) (string, error) {
+	f.calls++
+	return "", errTest("ollama /api/generate falhou: status=404 model=m não encontrado (rode: ollama pull m)")
+}
+func (f *missingModelGenerator) Name() string { return "fake-missing" }
+
+func TestGenerateWithRetrySkipsRetryOnMissingModel(t *testing.T) {
+	g := &missingModelGenerator{}
+	_, err := generateWithRetry(context.Background(), g, "x")
+	if err == nil {
+		t.Fatal("esperava erro de modelo ausente")
+	}
+	if g.calls != 1 {
+		t.Fatalf("modelo ausente não deveria ter retry (cada tentativa custa uma geração): %d calls", g.calls)
+	}
+}
