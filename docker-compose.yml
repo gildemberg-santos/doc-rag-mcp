@@ -19,7 +19,8 @@ services:
     # Rotação: gere nova (openssl rand -hex 32), troque no .env e reinicie
     # toda a stack junta — key diferente entre server e clients = 401.
     environment:
-      - QDRANT_API_KEY=${QDRANT_API_KEY:-}
+      # Formato aninhado exigido pelo Qdrant (QDRANT_API_KEY puro é ignorado).
+      - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY:-}
     volumes:
       - qdrant_storage:/qdrant/storage
     restart: unless-stopped

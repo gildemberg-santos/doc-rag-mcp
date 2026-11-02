@@ -82,7 +82,9 @@ func Metrics(h *Handler, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t0 := time.Now()
 		next.ServeHTTP(w, r)
-		h.TrackRequest(time.Since(t0))
+		d := time.Since(t0)
+		h.TrackRequest(d)
+		RecordRequest(r.Method, r.URL.Path, 200, d)
 	})
 }
 
@@ -347,6 +349,11 @@ func (h *Handler) computeStatus(ctx context.Context) StatusResponse {
 	resp.Points = count
 	resp.Projects = projects
 	dims := base.Dims
+
+	// Expõe contagem de pontos no Prometheus (por projeto).
+	for _, n := range projects {
+		SetPoints(h.Qdrant.Collection, n.Project, int64(n.Chunks))
+	}
 
 	// Nível 1: saúde da coleção + dims mismatch (o bug documentado no
 	// README — trocar modelo muda dims, a coleção não recria sozinha —

@@ -29,14 +29,15 @@ type Params struct {
 
 // Result é um chunk ranqueado.
 type Result struct {
-	Project  string
-	Path     string
-	Language string
-	Score    float64 // final (fusão) ou cosseno puro
-	Cos      float64
-	Kw       float64 // keyword normalizado 0..1 no pool
-	Strength string  // forte|moderado|fraco (heurística)
-	Content  string
+	Project    string
+	Path       string
+	Language   string
+	Score      float64 // final (fusão) ou cosseno puro
+	Cos        float64
+	Kw         float64 // keyword normalizado 0..1 no pool
+	Strength   string  // forte|moderado|fraco (heurística)
+	Content    string
+	IndexedAt  string  // ciclo de indexação (atomicidade por arquivo, PM-003)
 }
 
 // ParseProjects aceita "a,b" ou "" (todos).
@@ -116,10 +117,38 @@ func Run(ctx context.Context, q *vector.Client, e embed.Provider, p Params) ([]R
 			continue
 		}
 		kw := keywordScore(toks, path, content)
+		indexedAt, _ := h.Payload["indexed_at"].(string)
 		results = append(results, Result{
-			Project: proj, Path: path, Language: lang,
-			Cos: h.Score, Kw: kw, Content: content,
+			Project:   proj, Path: path, Language: lang,
+			Cos:       h.Score, Kw: kw, Content: content,
+			IndexedAt: indexedAt,
 		})
+	}
+
+	// Atomicidade por arquivo (PM-003): para cada (projeto, caminho),
+	// mantém apenas os chunks do ciclo indexado mais recente (indexed_at).
+	// Chunks de ciclos anteriores (órfãos de interrupção) são ignorados.
+	// Se nenhum resultado tem indexed_at (dados antigos ou testes), retorna tudo.
+	hasIndexedAt := false
+	latestByFile := map[string]string{} // "project\x00path" -> indexed_at máximo
+	for _, r := range results {
+		if r.IndexedAt != "" {
+			hasIndexedAt = true
+			key := r.Project + "\x00" + r.Path
+			if r.IndexedAt > latestByFile[key] {
+				latestByFile[key] = r.IndexedAt
+			}
+		}
+	}
+	if hasIndexedAt {
+		var filtered []Result
+		for _, r := range results {
+			key := r.Project + "\x00" + r.Path
+			if r.IndexedAt == latestByFile[key] {
+				filtered = append(filtered, r)
+			}
+		}
+		results = filtered
 	}
 
 	// Normaliza keyword no pool e funde (α=0.7 vetor, β=0.3 keyword).

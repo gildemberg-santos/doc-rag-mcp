@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -20,6 +21,7 @@ import (
 	"doc-rag-mcp/internal/indexer"
 	"doc-rag-mcp/internal/indexerstatus"
 	"doc-rag-mcp/internal/vector"
+	"doc-rag-mcp/internal/watcher"
 
 	"github.com/joho/godotenv"
 )
@@ -58,6 +60,7 @@ func main() {
 	embedConcurrency := flag.Int("embed-concurrency", 4, "lotes de embed+upsert em paralelo (default 4; use 1 para sequencial determinístico)")
 	dryRun := flag.Bool("dry-run", false, "simula o ciclo sem escrever nada: não embbeda, não faz upsert, não deleta — só conta e loga o que seria feito")
 	watch := flag.Bool("watch", false, "modo contínuo: repete a indexação incremental a cada --interval, até Ctrl-C/SIGTERM (ignora --no-clean=false — força incremental em todo ciclo)")
+	realtime := flag.Bool("realtime", false, "detecção de mudanças em tempo real via fsnotify: indexa imediatamente os arquivos alterados, sem esperar o próximo ciclo do --watch (só para um projeto, sem --all)")
 	interval := flag.Duration("interval", 10*time.Minute, "intervalo entre ciclos no modo --watch (ex.: 5m, 30s)")
 	statusFile := flag.String("status-file", os.Getenv("INDEXER_STATUS_FILE"), "caminho pra gravar um heartbeat JSON após cada ciclo (default: $INDEXER_STATUS_FILE, vazio desliga) — pra outro processo (ex. mcp-server) ler o status do --watch sem acesso a este processo")
 	genDocs := flag.Bool("generate-docs", os.Getenv("DOCGEN_ENABLED") == "true", "gera documentação por arquivo após indexar cada projeto (coleção -filedocs, incremental por source_hash; provider de geração independente via --docgen-provider; também liga com DOCGEN_ENABLED=true)")
@@ -255,6 +258,46 @@ func main() {
 			os.Exit(1)
 		}
 		return
+	}
+
+	// Detecção em tempo real via fsnotify (PM-002). Só para um projeto
+	// específico (sem --all), pois o watcher monitora um único diretório.
+	// O polling do --watch continua como rede de segurança para eventos
+	// perdidos ou reinícios.
+	if *realtime && !*all {
+		projectDir := *path
+		if projectDir == "" {
+			projectDir = indexer.ProjectDir(cfg.ProjectsRoot, *project)
+		}
+		w, err := watcher.New(500*time.Millisecond, func(paths []string) {
+			log.Printf("🐾 watcher: %d arquivo(s) alterado(s), indexando incremental", len(paths))
+			for _, p := range paths {
+				rel, err := filepath.Rel(projectDir, p)
+				if err != nil {
+					rel = p
+				}
+				if _, err := indexer.RunFiles(ctx, *project, projectDir, []string{rel}, q, e, indexer.Options{
+					Clean:             clean,
+					EmbedBatchSize:    *batchSize,
+					EmbedConcurrency:  *embedConcurrency,
+					DryRun:            *dryRun,
+				}); err != nil {
+					log.Printf("😿 watcher: falha ao indexar %s: %v", rel, err)
+				}
+			}
+		})
+		if err != nil {
+			log.Printf("🐾 aviso: não consegui iniciar o watcher fsnotify (continuando com polling apenas): %v", err)
+		} else {
+			if err := w.Add(projectDir); err != nil {
+				log.Printf("🐾 aviso: não consegui adicionar %s ao watcher: %v", projectDir, err)
+				w.Close()
+			} else {
+				go w.Run(ctx)
+				defer w.Close()
+				log.Printf("👀 watcher ativo em %s (debounce 500ms) — polling a cada %s como rede de segurança", projectDir, *interval)
+			}
+		}
 	}
 
 	for {

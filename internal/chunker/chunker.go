@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -319,6 +320,10 @@ func ScanProject(projectName, projectDir string, opt *Options, shouldSkip func(r
 		if !isMostlyText(text) {
 			continue
 		}
+		if isSensitiveContent(text) {
+			log.Printf("🚫 [%s] conteúdo sensível detectado, não indexado: %s", projectName, f.rel)
+			continue
+		}
 		// header com contexto do arquivo ajuda o retrieval.
 		// Arquivos com regra estrutural (rb/js/ts/md) saem em blocos por
 		// método/classe/heading com escopo; demais usam janela com overlap.
@@ -372,6 +377,103 @@ func ScanProject(projectName, projectDir string, opt *Options, shouldSkip func(r
 				FileHash:   fileHash,
 				ModTime:    f.modTime,
 				Size:       f.size,
+				ChunkCount: len(pieces),
+			}
+			if err := onChunk(c); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// ScanFiles processa apenas os arquivos informados (caminhos relativos ao
+// projeto) e chama onChunk para cada chunk gerado. Útil para reindexação
+// direcionada, ex.: watcher com fsnotify que dispara apenas nos arquivos
+// alterados, sem varrer todo o projeto.
+// Reutiliza a mesma lógica de chunking de ScanProject (header, blocos
+// estruturais, body_hash, file_hash), respeitando exclusões de segredos,
+// tamanho máximo e regras de índice do chunker.
+func ScanFiles(projectName, projectDir string, files []string, onChunk func(Chunk) error) error {
+	o := defaultOptions()
+	for _, rel := range files {
+		abs := filepath.Join(projectDir, rel)
+		info, err := os.Stat(abs)
+		if err != nil {
+			continue // arquivo não existe mais (foi apagado)
+		}
+		if info.IsDir() {
+			continue
+		}
+		if info.Size() == 0 {
+			continue
+		}
+		if !shouldIndex(rel, info) {
+			continue
+		}
+		if info.Size() > int64(o.MaxFileBytes) {
+			continue
+		}
+
+		data, err := os.ReadFile(abs)
+		if err != nil {
+			continue
+		}
+		text := string(data)
+		if !isMostlyText(text) {
+			continue
+		}
+		if isSensitiveContent(text) {
+			log.Printf("🚫 [%s] conteúdo sensível detectado, não indexado: %s", projectName, rel)
+			continue
+		}
+
+		lang := LanguageFor(rel)
+		header := fmt.Sprintf("Projeto: %s | Arquivo: %s | Linguagem: %s\n---\n", projectName, rel, lang)
+		type piece struct {
+			scope string
+			body  string
+		}
+		var pieces []piece
+		if blocks := splitStructured(text, lang); blocks != nil {
+			for _, b := range packBlocks(blocks, o.ChunkSize) {
+				pieces = append(pieces, piece{scope: b.scope, body: b.body})
+			}
+		} else {
+			for _, p := range splitIntoChunks(text, o.ChunkSize, o.Overlap) {
+				pieces = append(pieces, piece{body: p})
+			}
+		}
+
+		bodyHex := make([]string, len(pieces))
+		for i, pc := range pieces {
+			bh := sha256.Sum256([]byte(pc.scope + "\x00" + pc.body))
+			bodyHex[i] = fmt.Sprintf("%x", bh[:])
+		}
+		fh := sha256.New()
+		for _, s := range bodyHex {
+			fh.Write([]byte(s))
+			fh.Write([]byte{0})
+		}
+		fileHash := fmt.Sprintf("%x", fh.Sum(nil))
+		for i, pc := range pieces {
+			full := header
+			if pc.scope != "" {
+				full += "Escopo: " + pc.scope + "\n---\n"
+			}
+			full += pc.body
+			h := sha256.Sum256([]byte(full))
+			c := Chunk{
+				Project:    projectName,
+				Path:       rel,
+				Language:   lang,
+				ChunkIndex: i,
+				Content:    full,
+				Hash:       fmt.Sprintf("%x", h[:]),
+				BodyHash:   bodyHex[i],
+				FileHash:   fileHash,
+				ModTime:    info.ModTime(),
+				Size:       info.Size(),
 				ChunkCount: len(pieces),
 			}
 			if err := onChunk(c); err != nil {

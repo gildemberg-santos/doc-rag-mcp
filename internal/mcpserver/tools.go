@@ -233,6 +233,33 @@ func handleGetDocument(ctx context.Context, d *Deps, args GetDocArgs) (*mcp.Call
 	if len(all) == 0 {
 		return textResult(fmt.Sprintf("Arquivo '%s' não encontrado no projeto '%s'. Use list_docs para ver arquivos disponíveis.", args.Path, args.Project)), nil, nil
 	}
+	// Atomicidade por arquivo (PM-003): só retorna os chunks do ciclo
+	// indexado mais recente (indexed_at). Se o indexer foi interrompido no
+	// meio de um ciclo anterior, chunks órfãos de ciclos antigos são
+	// ignorados até que o próximo ciclo os substitua ou limpe.
+	// Se nenhum ponto tem indexed_at (dados antigos ou testes), retorna tudo.
+	hasIndexedAt := false
+	latestIndexedAt := ""
+	for _, p := range all {
+		if ts, _ := p["indexed_at"].(string); ts != "" {
+			hasIndexedAt = true
+			if ts > latestIndexedAt {
+				latestIndexedAt = ts
+			}
+		}
+	}
+	if hasIndexedAt {
+		var latest []map[string]any
+		for _, p := range all {
+			if ts, _ := p["indexed_at"].(string); ts == latestIndexedAt {
+				latest = append(latest, p)
+			}
+		}
+		if len(latest) == 0 {
+			return textResult(fmt.Sprintf("Arquivo '%s' não encontrado no projeto '%s'. Use list_docs para ver arquivos disponíveis.", args.Path, args.Project)), nil, nil
+		}
+		all = latest
+	}
 	sort.Slice(all, func(i, j int) bool {
 		ai, _ := all[i]["chunk_index"].(float64)
 		aj, _ := all[j]["chunk_index"].(float64)

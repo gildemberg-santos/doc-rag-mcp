@@ -144,6 +144,7 @@ func runHTTP(ctx context.Context, addr string, srv *mcp.Server, q *vector.Client
 	// observabilidade, não uso.
 	mux.Handle("/mcp", httpapi.Metrics(aux, mcpHandler))
 	mux.Handle("/search", httpapi.Metrics(aux, http.HandlerFunc(aux.Search)))
+	mux.Handle("/metrics", httpapi.MetricsHandler())
 	mux.HandleFunc("/health", aux.Health)
 	mux.HandleFunc("/status", aux.Status)
 	mux.HandleFunc("/status/history", aux.HistoryHandler)
